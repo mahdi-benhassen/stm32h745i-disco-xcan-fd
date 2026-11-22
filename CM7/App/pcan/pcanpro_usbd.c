@@ -220,6 +220,14 @@ __ALIGN_BEGIN static struct t_pcanpro_description pcanpro_dev __ALIGN_END =
 #endif
 };
 
+static uint32_t pcan_bulk_out_rx_len(const USBD_HandleTypeDef *pdev, uint32_t buf_size)
+{
+  uint32_t mps = (pdev->dev_speed == USBD_SPEED_HIGH)
+                     ? PCAN_HS_MAX_BULK_PACKET_SIZE
+                     : PCAN_FS_MAX_BULK_PACKET_SIZE;
+  return (mps < buf_size) ? mps : buf_size;
+}
+
 static uint8_t device_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 {
   USB_ENDPOINT_DESCRIPTOR *p_ep = &pcanpro_dev.ep1_i0;
@@ -253,13 +261,16 @@ static uint8_t device_init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   pdev->pClassData = (void *)&pcanpro_data;
   pdev->pClassDataCmsit[pdev->classId] = (void *)&pcanpro_data;
 
-  (void)USBD_LL_PrepareReceive(pdev, PCAN_USB_EP_CMDOUT, pcanpro_data.cmd_ep_buffer,
-                               (uint32_t)sizeof(pcanpro_data.cmd_ep_buffer));
-  (void)USBD_LL_PrepareReceive(pdev, PCAN_USB_EP_MSGOUT_CH1, pcanpro_data.data1_ep_buffer,
-                               (uint32_t)sizeof(pcanpro_data.data1_ep_buffer));
+  (void)USBD_LL_PrepareReceive(
+      pdev, PCAN_USB_EP_CMDOUT, pcanpro_data.cmd_ep_buffer,
+      pcan_bulk_out_rx_len(pdev, (uint32_t)sizeof(pcanpro_data.cmd_ep_buffer)));
+  (void)USBD_LL_PrepareReceive(
+      pdev, PCAN_USB_EP_MSGOUT_CH1, pcanpro_data.data1_ep_buffer,
+      pcan_bulk_out_rx_len(pdev, (uint32_t)sizeof(pcanpro_data.data1_ep_buffer)));
 #if defined(PCAN_PRO) || defined(PCAN_PRO_FD) || defined(PCAN_X6)
-  (void)USBD_LL_PrepareReceive(pdev, PCAN_USB_EP_MSGOUT_CH2, pcanpro_data.data2_ep_buffer,
-                               (uint32_t)sizeof(pcanpro_data.data2_ep_buffer));
+  (void)USBD_LL_PrepareReceive(
+      pdev, PCAN_USB_EP_MSGOUT_CH2, pcanpro_data.data2_ep_buffer,
+      pcan_bulk_out_rx_len(pdev, (uint32_t)sizeof(pcanpro_data.data2_ep_buffer)));
 #endif
 
   return (uint8_t)USBD_OK;
@@ -356,20 +367,23 @@ static uint8_t device_data_out(USBD_HandleTypeDef *pdev, uint8_t epnum)
   if (epnum == PCAN_USB_EP_CMDOUT)
   {
     pcan_protocol_process_data(epnum, pcanpro_data.cmd_ep_buffer, size);
-    (void)USBD_LL_PrepareReceive(pdev, epnum, pcanpro_data.cmd_ep_buffer,
-                                 (uint32_t)sizeof(pcanpro_data.cmd_ep_buffer));
+    (void)USBD_LL_PrepareReceive(
+        pdev, epnum, pcanpro_data.cmd_ep_buffer,
+        pcan_bulk_out_rx_len(pdev, (uint32_t)sizeof(pcanpro_data.cmd_ep_buffer)));
   }
   else if (epnum == PCAN_USB_EP_MSGOUT_CH1)
   {
     pcan_protocol_process_data(epnum, pcanpro_data.data1_ep_buffer, size);
-    (void)USBD_LL_PrepareReceive(pdev, epnum, pcanpro_data.data1_ep_buffer,
-                                 (uint32_t)sizeof(pcanpro_data.data1_ep_buffer));
+    (void)USBD_LL_PrepareReceive(
+        pdev, epnum, pcanpro_data.data1_ep_buffer,
+        pcan_bulk_out_rx_len(pdev, (uint32_t)sizeof(pcanpro_data.data1_ep_buffer)));
   }
   else if (epnum == PCAN_USB_EP_MSGOUT_CH2)
   {
     pcan_protocol_process_data(epnum, pcanpro_data.data2_ep_buffer, size);
-    (void)USBD_LL_PrepareReceive(pdev, epnum, pcanpro_data.data2_ep_buffer,
-                                 (uint32_t)sizeof(pcanpro_data.data2_ep_buffer));
+    (void)USBD_LL_PrepareReceive(
+        pdev, epnum, pcanpro_data.data2_ep_buffer,
+        pcan_bulk_out_rx_len(pdev, (uint32_t)sizeof(pcanpro_data.data2_ep_buffer)));
   }
   else
   {

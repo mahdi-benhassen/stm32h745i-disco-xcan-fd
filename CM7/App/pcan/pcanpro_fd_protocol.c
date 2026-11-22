@@ -14,6 +14,7 @@
 
 #define CAN_CHANNEL_MAX            (2U)
 #define PCAN_USB_DATA_BUFFER_SIZE  (2048U)
+#define PCAN_TX_REASM_BUFFER_SIZE  (512U)
 
 struct pcan_usbfd_fw_info
 {
@@ -81,6 +82,8 @@ __ALIGN_BEGIN static uint8_t resp_buffer[2][PCAN_USB_DATA_BUFFER_SIZE] __ALIGN_E
 __ALIGN_BEGIN static uint8_t data_buffer[PCAN_USB_DATA_BUFFER_SIZE] __ALIGN_END;
 static uint8_t drv_load_packet[16];
 static uint16_t data_pos = 0U;
+__ALIGN_BEGIN static uint8_t tx_reasm_buf[CAN_CHANNEL_MAX][PCAN_TX_REASM_BUFFER_SIZE] __ALIGN_END;
+static uint16_t tx_reasm_len[CAN_CHANNEL_MAX];
 
 static struct t_m2h_fsm resp_fsm[2] =
 {
@@ -228,6 +231,7 @@ void pcan_ep0_receive(void)
     resp_fsm[0].state = 0U;
     resp_fsm[1].state = 0U;
     data_pos = 0U;
+    memset(tx_reasm_len, 0, sizeof(tx_reasm_len));
     pcan_device.can_drv_loaded = drv_load_packet[1];
     pcan_led_set_mode(LED_STAT,
                       (pcan_device.can_drv_loaded != 0U) ? LED_MODE_BLINK_SLOW : LED_MODE_BLINK_FAST,
@@ -549,10 +553,10 @@ static void pcan_protocol_process_cmd(const uint8_t *ptr, uint16_t size)
           memcpy(&timing, ptr, sizeof(timing));
           pcan_device.can[channel].slow_br = timing;
 
-          br.brp = (uint16_t)(timing.brp + 1U);
-          br.tseg1 = (uint16_t)(timing.tseg1 + 1U);
-          br.tseg2 = (uint8_t)(timing.tseg2 + 1U);
-          br.sjw = (uint8_t)((timing.sjw_t & 0x0FU) + 1U);
+          br.brp = (uint16_t)(((uint32_t)timing.brp & (uint32_t)UCAN_TSLOW_BRP_MASK) + 1U);
+          br.tseg1 = (uint16_t)(((uint32_t)timing.tseg1 & (uint32_t)UCAN_TSLOW_TSEG1_MASK) + 1U);
+          br.tseg2 = (uint8_t)(((uint32_t)timing.tseg2 & (uint32_t)UCAN_TSLOW_TSEG2_MASK) + 1U);
+          br.sjw = (uint8_t)(((uint32_t)timing.sjw_t & (uint32_t)UCAN_TSLOW_SJW_MASK) + 1U);
 
           (void)pcan_protocol_set_baudrate(channel, &br, NULL);
         }
@@ -566,10 +570,10 @@ static void pcan_protocol_process_cmd(const uint8_t *ptr, uint16_t size)
           memcpy(&timing, ptr, sizeof(timing));
           pcan_device.can[channel].fast_br = timing;
 
-          br.brp = (uint16_t)(timing.brp + 1U);
-          br.tseg1 = (uint16_t)(timing.tseg1 + 1U);
-          br.tseg2 = (uint8_t)(timing.tseg2 + 1U);
-          br.sjw = (uint8_t)((timing.sjw & 0x0FU) + 1U);
+          br.brp = (uint16_t)(((uint32_t)timing.brp & (uint32_t)UCAN_TFAST_BRP_MASK) + 1U);
+          br.tseg1 = (uint16_t)(((uint32_t)timing.tseg1 & (uint32_t)UCAN_TFAST_TSEG1_MASK) + 1U);
+          br.tseg2 = (uint8_t)(((uint32_t)timing.tseg2 & (uint32_t)UCAN_TFAST_TSEG2_MASK) + 1U);
+          br.sjw = (uint8_t)(((uint32_t)timing.sjw & (uint32_t)UCAN_TFAST_SJW_MASK) + 1U);
 
           (void)pcan_protocol_set_baudrate(channel, NULL, &br);
         }
@@ -722,37 +726,99 @@ void pcan_protocol_process_data(uint8_t ep, uint8_t *ptr, uint16_t size)
     return;
   }
 
-  while (size >= 4U)
+  uint8_t ch;
+  if (ep == PCAN_USB_EP_MSGOUT_CH1)
   {
-    struct ucan_msg hdr;
-    memcpy(&hdr, ptr, sizeof(hdr));
-    if ((hdr.size < 4U) || (hdr.type == 0U) || (size < hdr.size))
+    ch = CAN_BUS_1;
+  }
+  else if (ep == PCAN_USB_EP_MSGOUT_CH2)
+  {
+    ch = CAN_BUS_2;
+  }
+  else
+  {
+    return;
+  }
+
+  if (size > PCAN_TX_REASM_BUFFER_SIZE)
+  {
+    tx_reasm_len[ch] = 0U;
+    return;
+  }
+
+  uint8_t *buf = tx_reasm_buf[ch];
+  uint16_t len = tx_reasm_len[ch];
+
+  if (((uint32_t)len + (uint32_t)size) > PCAN_TX_REASM_BUFFER_SIZE)
+  {
+    len = 0U;
+  }
+
+  if (size > 0U)
+  {
+    memcpy(&buf[len], ptr, size);
+    len = (uint16_t)(len + size);
+  }
+
+  uint16_t pos = 0U;
+  uint8_t saw_endmark = 0U;
+
+  while ((uint16_t)(len - pos) >= 4U)
+  {
+    uint16_t msg_size = 0U;
+    uint16_t msg_type = 0U;
+    memcpy(&msg_size, &buf[pos], sizeof(msg_size));
+    memcpy(&msg_type, &buf[pos + 2U], sizeof(msg_type));
+
+    if ((msg_size == 0U) || (msg_type == 0U) ||
+        (msg_type == UCAN_CMD_END_OF_COLLECTION) || (msg_type == 0xFFFFU))
+    {
+      saw_endmark = 1U;
+      break;
+    }
+
+    if ((msg_size < 4U) || (msg_size > PCAN_TX_REASM_BUFFER_SIZE))
+    {
+      saw_endmark = 1U;
+      break;
+    }
+
+    if ((uint16_t)(len - pos) < msg_size)
     {
       break;
     }
 
-    switch (hdr.type)
+    switch (msg_type)
     {
       case UCAN_MSG_CAN_TX:
-        if (hdr.size >= sizeof(struct ucan_tx_msg))
+        if (msg_size >= sizeof(struct ucan_tx_msg))
         {
-          (void)pcan_protocol_tx_frame((const struct ucan_tx_msg *)ptr, hdr.size);
+          (void)pcan_protocol_tx_frame((const struct ucan_tx_msg *)&buf[pos], msg_size);
         }
         break;
 
       case UCAN_MSG_CAN_TX_PAUSE:
         break;
 
-      case UCAN_CMD_END_OF_COLLECTION:
-      case 0xFFFFU:
-        return;
-
       default:
         break;
     }
 
-    size = (uint16_t)(size - hdr.size);
-    ptr += hdr.size;
+    pos = (uint16_t)(pos + msg_size);
+  }
+
+  if ((saw_endmark != 0U) || (size < PCAN_FS_MAX_BULK_PACKET_SIZE))
+  {
+    tx_reasm_len[ch] = 0U;
+  }
+  else
+  {
+    uint16_t rem = (uint16_t)(len - pos);
+    if ((rem > 0U) && (pos > 0U))
+    {
+      memmove(buf, &buf[pos], rem);
+    }
+    tx_reasm_len[ch] = rem;
   }
 }
 
@@ -760,6 +826,7 @@ void pcan_protocol_init(void)
 {
   uint32_t uid0 = HAL_GetUIDw0();
   pcan_device.device_nr = ((uid0 == 0U) || (uid0 == 0xFFFFFFFFU)) ? 1U : uid0;
+  memset(tx_reasm_len, 0, sizeof(tx_reasm_len));
 
   (void)pcan_can_init_ex(CAN_BUS_1, 500000U);
   (void)pcan_can_set_filter_mask(CAN_BUS_1, 0, 0, 0U, 0U);

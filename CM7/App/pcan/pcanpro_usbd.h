@@ -14,8 +14,8 @@
 #define PCAN_USB_EP_MSGIN_CH2         0x83U
 
 #if defined(PCAN_PRO_FD) || defined(PCAN_FD) || defined(PCAN_X6)
-#define PCAN_DATA_PACKET_SIZE         (256U)
-#define PCAN_CMD_PACKET_SIZE          (128U)
+#define PCAN_DATA_PACKET_SIZE         (PCAN_FS_MAX_BULK_PACKET_SIZE)
+#define PCAN_CMD_PACKET_SIZE          (PCAN_FS_MAX_BULK_PACKET_SIZE)
 #elif defined(PCAN_PRO)
 #define PCAN_DATA_PACKET_SIZE         (64U)
 #define PCAN_CMD_PACKET_SIZE          (512U)
