@@ -2,6 +2,7 @@
 #include <string.h>
 #include "stm32h7xx_hal.h"
 #include "usbd_ctlreq.h"
+#include "usbd_ioreq.h"
 #include "pcanpro_can.h"
 #include "pcan_usbpro_fw.h"
 #include "pcanfd_usb_fw.h"
