@@ -1,0 +1,165 @@
+name: Build and Release STM32H745I-DISCO Firmware
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - '*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build:
+    name: Build CM7 & CM4 Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install ARM GCC toolchain and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib
+          cmake --version
+          ninja --version
+          arm-none-eabi-gcc --version
+
+      - name: Build CM7 (Debug & Release)
+        working-directory: CM7
+        run: |
+          cmake --preset Debug
+          cmake --build --preset Debug --parallel
+          cmake --preset Release
+          cmake --build --preset Release --parallel
+
+      - name: Build CM4 (Debug & Release)
+        working-directory: CM4
+        run: |
+          cmake --preset Debug
+          cmake --build --preset Debug --parallel
+          cmake --preset Release
+          cmake --build --preset Release --parallel
+
+      - name: Package Release firmware assets and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${GITHUB_SHA::7}"
+          fi
+
+          dist="${GITHUB_WORKSPACE}/dist"
+          mkdir -p "${dist}"
+
+          for core in CM7 CM4; do
+            target="PCAN_STM32H745I_${core}"
+            build_dir="${GITHUB_WORKSPACE}/${core}/build/Release"
+            for suffix in elf hex bin map; do
+              src="${build_dir}/${target}.${suffix}"
+              test -s "${src}"
+              cp "${src}" "${dist}/${target}-${VERSION}.${suffix}"
+            done
+          done
+
+          arm-none-eabi-size \
+            "${GITHUB_WORKSPACE}/CM7/build/Release/PCAN_STM32H745I_CM7.elf" \
+            "${GITHUB_WORKSPACE}/CM4/build/Release/PCAN_STM32H745I_CM4.elf" \
+            > "${dist}/PCAN_STM32H745I-${VERSION}.size.txt"
+
+          {
+            printf 'project=%s\n' "PCAN_STM32H745I"
+            printf 'version=%s\n' "${VERSION}"
+            printf 'ref=%s\n' "${GITHUB_REF}"
+            printf 'commit=%s\n' "${GITHUB_SHA}"
+            printf 'target=STM32H745I-DISCO (Dual-Core CM7 + CM4)\n'
+            printf 'cm7_flash_address=0x08000000\n'
+            printf 'cm4_flash_address=0x08100000\n'
+            printf 'build_type=Release\n'
+          } > "${dist}/PCAN_STM32H745I-${VERSION}.manifest.txt"
+
+          (
+            cd "${dist}"
+            rm -f SHA256SUMS
+            sha256sum -- * > SHA256SUMS
+          )
+
+          {
+            echo "## STM32H745I-DISCO Firmware Size Summary (\`${VERSION}\`)"
+            echo ""
+            echo "### Debug"
+            echo '```text'
+            arm-none-eabi-size \
+              "${GITHUB_WORKSPACE}/CM7/build/Debug/PCAN_STM32H745I_CM7.elf" \
+              "${GITHUB_WORKSPACE}/CM4/build/Debug/PCAN_STM32H745I_CM4.elf"
+            echo '```'
+            echo ""
+            echo "### Release"
+            echo '```text'
+            cat "${dist}/PCAN_STM32H745I-${VERSION}.size.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stm32h745i-disco-xcan-fd-firmware
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: stm32h745i-disco-xcan-fd-firmware
+          path: dist
+
+      - name: Verify release checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+
+      - name: Publish tagged release and firmware assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          prerelease_flag=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease_flag+=(--prerelease)
+          fi
+
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              ${prerelease_flag[@]+"${prerelease_flag[@]}"}
+          fi
