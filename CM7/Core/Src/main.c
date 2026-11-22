@@ -25,7 +25,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "pcanpro_timestamp.h"
+#include "pcanpro_led.h"
+#include "pcanpro_can.h"
+#include "pcanpro_protocol.h"
+#include "pcan_usb_device.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -145,7 +149,11 @@ Error_Handler();
   MX_USART3_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-
+  pcan_timestamp_init();
+  pcan_led_init();
+  pcan_led_set_mode(LED_STAT, LED_MODE_BLINK_FAST, 0xFFFFFFFFu);
+  pcan_protocol_init();
+  pcan_usb_device_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -155,6 +163,10 @@ Error_Handler();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    pcan_usb_device_poll();
+    pcan_can_poll();
+    pcan_protocol_poll();
+    pcan_led_poll();
   }
   /* USER CODE END 3 */
 }

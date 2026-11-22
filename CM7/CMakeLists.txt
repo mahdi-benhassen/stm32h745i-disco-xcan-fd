@@ -45,7 +45,9 @@ set(CMAKE_CXX_COMPILER_FORCED "true")
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    PCAN_PRO_FD=1
+    INCLUDE_LIN_INTERFACE=1
+    USB_MODULE_ID=DEVICE_FS
 )
 
 # Enable CMake support for ASM and C languages
@@ -53,12 +55,18 @@ enable_language(C ASM)
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined include paths
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan
 )
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcan_usb_device.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcan_usbd_desc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcanpro_usbd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcanpro_can.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcanpro_fd_protocol.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcanpro_timestamp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/App/pcan/pcanpro_led.c
 )
 
 # Link directories setup
