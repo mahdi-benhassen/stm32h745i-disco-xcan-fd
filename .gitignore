@@ -18,3 +18,20 @@ compile_commands.json
 .cache/
 .DS_Store
 Thumbs.db
+
+# Keil MDK-ARM build outputs
+MDK-ARM/PCAN_STM32H745I_CM7/
+MDK-ARM/PCAN_STM32H745I_CM4/
+MDK-ARM/DebugConfig/
+MDK-ARM/Listings/
+MDK-ARM/Objects/
+MDK-ARM/RTE/
+*.uvguix.*
+*.scvd
+*.dbgconf
+*.axf
+*.crf
+*.dep
+*.htm
+*.lnp
+*.lst
