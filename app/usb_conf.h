@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <stddef.h>
 #include <stdint.h>
 #include "at32f45x.h"
 #include "at32f45x_usb.h"

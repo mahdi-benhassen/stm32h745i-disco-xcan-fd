@@ -338,7 +338,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define>AT32F457ZET7,USE_STDPERIPH_DRIVER,AT_START_F457_V1,SUPPORT_CAN_FD,PCAN_PRO_FD=1,INCLUDE_LIN_INTERFACE=1</Define>
+              <Define>AT32F457ZET7,USE_STDPERIPH_DRIVER,AT_START_F457_V1,PCAN_PRO_FD=1,INCLUDE_LIN_INTERFACE=1</Define>
               <Undefine></Undefine>
               <IncludePath>..\libraries\cmsis\cm4\core_support;..\libraries\cmsis\cm4\device_support;..\libraries\drivers\inc;..\middlewares\usb_drivers\inc;..\board;..\app;..\app\pcan</IncludePath>
             </VariousControls>
