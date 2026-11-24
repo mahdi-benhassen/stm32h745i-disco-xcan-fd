@@ -67,6 +67,7 @@ add_executable(${PROJECT_NAME}
   app/main.c
   app/at32f45x_clock.c
   app/at32f45x_int.c
+  app/syscalls.c
   app/pcan/pcan_usb_device.c
   app/pcan/pcan_usbd_desc.c
   app/pcan/pcanpro_can.c
