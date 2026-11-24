@@ -1,44 +1,33 @@
-# stm32h745i-disco-xcan-fd
+# XCAN-FD Firmware — Artery AT-START-F457 (`AT32F457ZET7`) Port
 
-Dual-channel USB-to-CAN-FD adapter firmware for the **STM32H745I-DISCO** board, porting [moonglow/pcan_pro_x](https://github.com/moonglow/pcan_pro_x) (`PCAN_PRO_FD=1`, `INCLUDE_LIN_INTERFACE=1`) to STM32H745 dual-core (`CM7` + `CM4`) with hardware `FDCAN1`/`FDCAN2`.
+This branch (`at-start-f457`) ports the PCAN-USB Pro FD compatible firmware (`PCAN_PRO_FD=1`, `INCLUDE_LIN_INTERFACE=1`) to the **Artery `AT-START-F457`** evaluation board (`AT32F457ZET7`, Cortex-M4F, 512 KB Flash / 144 KB SRAM, single CAN-FD channel).
 
-## Hardware Mapping (STM32H745I-DISCO / MB1381)
+> Looking for the original dual-core STM32H745I-DISCO firmware? Switch to `main` (CMake/GCC) or `keil-mdk` (STM32CubeMX Keil MDK-ARM v5).
 
-| Subsystem | Assignment | Notes |
+## Hardware & Clock Architecture
+
+| Resource | Mapping / Configuration | Notes |
 |---|---|---|
-| **Power & Clock** | `PWR_DIRECT_SMPS_SUPPLY`, `VOS1`, `25 MHz` HSE | `CM7` = `400 MHz`, `HCLK/CM4/TIM2` = `200 MHz`, `PLL1Q` (`FDCAN`) = `80.0 MHz`, `PLL3Q` (`USB`) = `48.0 MHz` |
-| **FDCAN1 (Channel 0)** | `PH13` (TX), `PH14` (RX) | Onboard 5 Mbps transceiver, 1280-word Message RAM offset `0` |
-| **FDCAN2 (Channel 1)** | `PB13` (TX), `PB5` (RX) | Onboard 5 Mbps transceiver, 1280-word Message RAM offset `1280` |
-| **USB OTG FS** | `CN13` (`PA11` DM, `PA12` DP) | Full-Speed `64 B` bulk composite descriptor, polled via `pcan_usb_device_poll()` |
-| **Timestamp** | `TIM2` (32-bit, `PSC = 200 - 1`) | Free-running `1.0 µs` tick extended to 64-bit timestamps |
-| **LEDs (Active-LOW)** | `LED1` (`PJ2`, Green) / `LED2` (`PI13`, Red) | `LED1` = device status, `LED2` = dual-channel CAN RX/TX activity |
-| **Cortex-M4** | `CM4` idle loop (`__WFI()`) | Required for `DUAL_CORE_BOOT_SYNC_SEQUENCE` (HSEM wakeup) |
+| **MCU** | `AT32F457ZET7` | 8 MHz HEXT crystal |
+| **System Clock** | `160 MHz` (`PLL VCO = 960 MHz / 6`) | AHB = 160 MHz, APB1 = 160 MHz, APB2 = 160 MHz, APB3 = 80 MHz |
+| **USB Clock** | `48.0 MHz` exact (`PLLU = 960 MHz / 20`) | Exact crystal-locked clock for OTGFS1 |
+| **USB Device** | `OTGFS1` Full-Speed (`PA11` DM / `PA12` DP) | `USB_VBUS_IGNORE` enabled for Type-C device connector; `bInterfaceClass = 0x00` (Interface 0 CAN-FD `0x81..0x03`, Interface 1 LIN placeholder `0x84..0x06`) |
+| **CAN-FD (`CAN1`)** | `PD0` (`CAN1_RX`, AF9), `PD1` (`CAN1_TX`, AF9), **`PB7` (`CAN_STB` LOW)** | `CAN1` clocked from `PCLK = 160 MHz` (`2 * 80 MHz` PCAN reference clock). **`PB7` is driven LOW** to keep the onboard CAN-FD transceiver active in normal mode. |
+| **Timestamps** | `TMR2` (32-bit, `1 MHz` / `1 us` resolution) | Plus `1 ms` `SysTick` timebase for LEDs & bus-load timers |
+| **Status LEDs** | `LED2` (`PD13`) USB Status, `LED3` (`PD14`) CAN1 RX, `LED4` (`PD15`) CAN1 TX | Active-LOW board LEDs |
 
-## Building (CMake + Ninja + ARM GCC)
+## USB Identifiers Notice
 
-Configure and build both cores (`CM4` and `CM7`):
+Open-source development defaults (`0x0483` / `0x0011`, `"XCAN"` / `"XCAN-USB Pro FD"`) are isolated in [`app/pcan/pcan_usb_ids.h`](app/pcan/pcan_usb_ids.h).
 
+## Building
+
+### Option 1: Keil MDK-ARM v5 (uVision, Arm Compiler 6)
+Open [`mdk_v5/at_start_f457_pcan_fd.uvprojx`](mdk_v5/at_start_f457_pcan_fd.uvprojx) in Keil uVision 5 (`ArteryTek.AT32F45x_DFP` 2.0.1+) and press **F7** to build `mdk_v5/objects/at_start_f457_pcan_fd.hex` (C11, Arm Compiler 6).
+
+### Option 2: CMake + ARM GCC + Ninja
 ```bash
-cmake --preset Release -S CM4
-cmake --build --preset Release -S CM4 --parallel
-
-cmake --preset Release -S CM7
-cmake --build --preset Release -S CM7 --parallel
+cmake --preset Release
+cmake --build --preset Release --parallel
 ```
-
-Outputs (`.elf`, `.hex`, `.bin`, `.map`) are generated in `CM4/build/Release/` and `CM7/build/Release/`.
-
-## Flashing (Dual-Core)
-
-Both binaries **must** be programmed so `CM7` and `CM4` complete dual-core HSEM boot synchronization:
-
-* **CM7 (`PCAN_STM32H745I_CM7.bin`):** Flash Bank 1 `0x08000000`
-* **CM4 (`PCAN_STM32H745I_CM4.bin`):** Flash Bank 2 `0x08100000`
-
-## USB Identity Configuration
-
-This repository ships with open-source default USB identifiers (`VID 0x0483`, `PID 0x0011`, manufacturer `"XCAN"`, product `"XCAN-USB Pro FD"`) isolated in `CM7/App/pcan/pcan_usb_ids.h`. You can customize `PCAN_USB_VID`, `PCAN_USB_PID`, and the descriptor strings locally via `CM7/App/pcan/pcan_usb_ids.h` or CMake `-D` compiler definitions without editing driver sources.
-
-## Attribution
-
-Based on the protocol and firmware architecture of [moonglow/pcan_pro_x](https://github.com/moonglow/pcan_pro_x), ported to STM32CubeH7 HAL `FDCAN` and USB Device Library v2.11 for STM32H745I-DISCO.
+Outputs are written to `build/Release/AT_START_F457_PCAN_FD.{elf,hex,bin,map}`. Pre-built GitHub Actions artifacts (`.elf`, `.hex`, `.bin`, `.map`, `SHA256SUMS`) are also attached to every CI run.

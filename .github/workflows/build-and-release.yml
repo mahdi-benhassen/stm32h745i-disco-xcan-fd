@@ -1,4 +1,4 @@
-name: Build and Release STM32H745I-DISCO Firmware
+name: Build and Release AT-START-F457 Firmware
 
 on:
   push:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build CM7 & CM4 Firmware
+    name: Build AT-START-F457 Firmware
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -39,16 +39,7 @@ jobs:
           ninja --version
           arm-none-eabi-gcc --version
 
-      - name: Build CM7 (Debug & Release)
-        working-directory: CM7
-        run: |
-          cmake --preset Debug
-          cmake --build --preset Debug --parallel
-          cmake --preset Release
-          cmake --build --preset Release --parallel
-
-      - name: Build CM4 (Debug & Release)
-        working-directory: CM4
+      - name: Build Debug & Release
         run: |
           cmake --preset Debug
           cmake --build --preset Debug --parallel
@@ -68,31 +59,29 @@ jobs:
           dist="${GITHUB_WORKSPACE}/dist"
           mkdir -p "${dist}"
 
-          for core in CM7 CM4; do
-            target="PCAN_STM32H745I_${core}"
-            build_dir="${GITHUB_WORKSPACE}/${core}/build/Release"
-            for suffix in elf hex bin map; do
-              src="${build_dir}/${target}.${suffix}"
-              test -s "${src}"
-              cp "${src}" "${dist}/${target}-${VERSION}.${suffix}"
-            done
+          target="AT_START_F457_PCAN_FD"
+          build_dir="${GITHUB_WORKSPACE}/build/Release"
+          for suffix in elf hex bin map; do
+            src="${build_dir}/${target}.${suffix}"
+            test -s "${src}"
+            cp "${src}" "${dist}/${target}-${VERSION}.${suffix}"
           done
 
           arm-none-eabi-size \
-            "${GITHUB_WORKSPACE}/CM7/build/Release/PCAN_STM32H745I_CM7.elf" \
-            "${GITHUB_WORKSPACE}/CM4/build/Release/PCAN_STM32H745I_CM4.elf" \
-            > "${dist}/PCAN_STM32H745I-${VERSION}.size.txt"
+            "${GITHUB_WORKSPACE}/build/Release/${target}.elf" \
+            > "${dist}/${target}-${VERSION}.size.txt"
 
           {
-            printf 'project=%s\n' "PCAN_STM32H745I"
+            printf 'project=%s\n' "AT_START_F457_PCAN_FD"
             printf 'version=%s\n' "${VERSION}"
             printf 'ref=%s\n' "${GITHUB_REF}"
             printf 'commit=%s\n' "${GITHUB_SHA}"
-            printf 'target=STM32H745I-DISCO (Dual-Core CM7 + CM4)\n'
-            printf 'cm7_flash_address=0x08000000\n'
-            printf 'cm4_flash_address=0x08100000\n'
+            printf 'target=AT-START-F457 (AT32F457ZET7)\n'
+            printf 'flash_address=0x08000000\n'
+            printf 'can_clock_hz=160000000\n'
+            printf 'usb_clock_hz=48000000\n'
             printf 'build_type=Release\n'
-          } > "${dist}/PCAN_STM32H745I-${VERSION}.manifest.txt"
+          } > "${dist}/${target}-${VERSION}.manifest.txt"
 
           (
             cd "${dist}"
@@ -101,25 +90,23 @@ jobs:
           )
 
           {
-            echo "## STM32H745I-DISCO Firmware Size Summary (\`${VERSION}\`)"
+            echo "## AT-START-F457 Firmware Size Summary (\`${VERSION}\`)"
             echo ""
             echo "### Debug"
             echo '```text'
-            arm-none-eabi-size \
-              "${GITHUB_WORKSPACE}/CM7/build/Debug/PCAN_STM32H745I_CM7.elf" \
-              "${GITHUB_WORKSPACE}/CM4/build/Debug/PCAN_STM32H745I_CM4.elf"
+            arm-none-eabi-size "${GITHUB_WORKSPACE}/build/Debug/${target}.elf"
             echo '```'
             echo ""
             echo "### Release"
             echo '```text'
-            cat "${dist}/PCAN_STM32H745I-${VERSION}.size.txt"
+            cat "${dist}/${target}-${VERSION}.size.txt"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stm32h745i-disco-xcan-fd-firmware
+          name: AT_START_F457_PCAN_FD-firmware
           path: dist/
           if-no-files-found: error
           retention-days: 30
@@ -135,7 +122,7 @@ jobs:
       - name: Download packaged firmware
         uses: actions/download-artifact@v4
         with:
-          name: stm32h745i-disco-xcan-fd-firmware
+          name: AT_START_F457_PCAN_FD-firmware
           path: dist
 
       - name: Verify release checksums

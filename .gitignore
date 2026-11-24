@@ -1,20 +1,26 @@
-# Build outputs
+# Build directories
 build/
-CM4/build/
-CM7/build/
-*.elf
-*.bin
-*.hex
+dist/
+cmake-build-*/
+
+# Keil MDK-ARM v5 build outputs & local user settings
+mdk_v5/objects/
+mdk_v5/listings/
+mdk_v5/*.uvguix.*
+mdk_v5/*.uvoptx
+*.axf
+*.build_log.htm
+*.dep
+*.lnp
+*.sct
+*.lst
 *.map
+*.crf
 *.o
 *.d
-*.su
-*.cyclo
-*.list
-compile_commands.json
 
-# IDE / Editor
+# IDE & OS metadata
 .vscode/
-.cache/
+.idea/
 .DS_Store
 Thumbs.db
