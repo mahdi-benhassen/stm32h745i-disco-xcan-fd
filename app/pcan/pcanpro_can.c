@@ -47,11 +47,11 @@ static struct t_can_dev can_dev_array[CAN_BUS_TOTAL] =
     .data_timing = { .brp = 2U, .tseg1 = 15U, .tseg2 = 4U, .sjw = 4U },     /* 4 Mbit/s @ 160 MHz */
   },
   [CAN_BUS_2] = {
-    .can_x = NULL,
-    .is_physical = 0U,
+    .can_x = CAN2,
+    .is_physical = 1U,
     .iso_mode = 1U,
-    .nom_timing = { .brp = 2U, .tseg1 = 63U, .tseg2 = 16U, .sjw = 16U },
-    .data_timing = { .brp = 2U, .tseg1 = 15U, .tseg2 = 4U, .sjw = 4U },
+    .nom_timing = { .brp = 2U, .tseg1 = 63U, .tseg2 = 16U, .sjw = 16U },   /* 1 Mbit/s @ 160 MHz */
+    .data_timing = { .brp = 2U, .tseg1 = 15U, .tseg2 = 4U, .sjw = 4U },     /* 4 Mbit/s @ 160 MHz */
   },
 };
 
@@ -265,6 +265,39 @@ static void can1_gpio_and_clock_init(void)
   gpio_bits_reset(GPIOB, GPIO_PINS_7);
 }
 
+static void can2_gpio_and_clock_init(void)
+{
+  static uint8_t initialized = 0U;
+  if (initialized != 0U)
+  {
+    return;
+  }
+  initialized = 1U;
+
+  gpio_init_type gpio_init_struct;
+
+  crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_CAN2_PERIPH_CLOCK, TRUE);
+  crm_can_clock_select(CRM_CAN2, CRM_CAN_CLOCK_SOURCE_PCLK);
+
+  gpio_default_para_init(&gpio_init_struct);
+  gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+  gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+  gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+
+  /* PB5 = CAN2_RX (AF9): internal pull-up keeps unpopulated RX recessive HIGH */
+  gpio_init_struct.gpio_pull = GPIO_PULL_UP;
+  gpio_init_struct.gpio_pins = GPIO_PINS_5;
+  gpio_init(GPIOB, &gpio_init_struct);
+  gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE5, GPIO_MUX_9);
+
+  /* PB13 = CAN2_TX (AF9) */
+  gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+  gpio_init_struct.gpio_pins = GPIO_PINS_13;
+  gpio_init(GPIOB, &gpio_init_struct);
+  gpio_pin_mux_config(GPIOB, GPIO_PINS_SOURCE13, GPIO_MUX_9);
+}
+
 static void scale_timing_for_div(const struct t_can_bitrate *src, uint32_t div,
                                  uint32_t max_bts1, uint32_t max_bts2,
                                  uint32_t *out_bts1, uint32_t *out_bts2, uint32_t *out_sjw)
@@ -304,7 +337,14 @@ static void can_apply_config(struct t_can_dev *dev)
   }
 
   can_type *can_x = dev->can_x;
-  can1_gpio_and_clock_init();
+  if (can_x == CAN1)
+  {
+    can1_gpio_and_clock_init();
+  }
+  else if (can_x == CAN2)
+  {
+    can2_gpio_and_clock_init();
+  }
 
   can_software_reset(can_x, TRUE);
 
@@ -834,13 +874,19 @@ void pcan_can_poll(void)
   static uint32_t err_last_check = 0U;
   uint32_t ts_ms = pcan_timestamp_millis();
 
-  can_poll_rx_fifo(CAN_BUS_1);
-  can_flush_tx_fifo(CAN_BUS_1);
+  for (int bus = 0; bus < CAN_BUS_TOTAL; bus++)
+  {
+    can_poll_rx_fifo(bus);
+    can_flush_tx_fifo(bus);
+  }
 
   if ((uint32_t)(ts_ms - err_last_check) >= 250U)
   {
     err_last_check = ts_ms;
-    can_poll_errors(CAN_BUS_1);
+    for (int bus = 0; bus < CAN_BUS_TOTAL; bus++)
+    {
+      can_poll_errors(bus);
+    }
   }
 }
 

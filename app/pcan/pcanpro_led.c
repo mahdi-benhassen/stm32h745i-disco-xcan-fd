@@ -17,9 +17,9 @@ struct t_led_ctx
 static struct t_led_ctx led_ctx_array[LED_TOTAL] =
 {
   [LED_CH0_RX] = { .has_hw_led = 1U, .hw_led = LED3 }, /* PD14 */
-  [LED_CH1_RX] = { .has_hw_led = 0U, .hw_led = LED3 }, /* Unused on single-CAN AT-START-F457 */
+  [LED_CH1_RX] = { .has_hw_led = 1U, .hw_led = LED3 }, /* Shared with LED3 on AT-START-F457 */
   [LED_CH0_TX] = { .has_hw_led = 1U, .hw_led = LED4 }, /* PD15 */
-  [LED_CH1_TX] = { .has_hw_led = 0U, .hw_led = LED4 }, /* Unused on single-CAN AT-START-F457 */
+  [LED_CH1_TX] = { .has_hw_led = 1U, .hw_led = LED4 }, /* Shared with LED4 on AT-START-F457 */
   [LED_STAT]   = { .has_hw_led = 1U, .hw_led = LED2 }, /* PD13 */
 };
 

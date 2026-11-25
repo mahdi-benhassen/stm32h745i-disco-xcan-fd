@@ -1,6 +1,6 @@
 # XCAN-FD Firmware — Artery AT-START-F457 (`AT32F457ZET7`) Port
 
-This branch (`at-start-f457`) ports the PCAN-USB Pro FD compatible firmware (`PCAN_PRO_FD=1`, `INCLUDE_LIN_INTERFACE=1`) to the **Artery `AT-START-F457`** evaluation board (`AT32F457ZET7`, Cortex-M4F, 512 KB Flash / 144 KB SRAM, single CAN-FD channel).
+This branch (`at-start-f457`) ports the PCAN-USB Pro FD compatible firmware (`PCAN_PRO_FD=1`, `INCLUDE_LIN_INTERFACE=1`) to the **Artery `AT-START-F457`** evaluation board (`AT32F457ZET7`, Cortex-M4F, 512 KB Flash / 144 KB SRAM, dual CAN-FD `CAN1` + `CAN2`).
 
 > Looking for the original dual-core STM32H745I-DISCO firmware? Switch to `main` (CMake/GCC) or `keil-mdk` (STM32CubeMX Keil MDK-ARM v5).
 
@@ -12,9 +12,10 @@ This branch (`at-start-f457`) ports the PCAN-USB Pro FD compatible firmware (`PC
 | **System Clock** | `160 MHz` (`PLL VCO = 960 MHz / 6`) | AHB = 160 MHz, APB1 = 160 MHz, APB2 = 160 MHz, APB3 = 80 MHz |
 | **USB Clock** | `48.0 MHz` exact (`PLLU = 960 MHz / 20`) | Exact crystal-locked clock for OTGFS1 |
 | **USB Device** | `OTGFS1` Full-Speed (`PA11` DM / `PA12` DP) | `USB_VBUS_IGNORE` enabled for Type-C device connector; `bInterfaceClass = 0x00` (Interface 0 CAN-FD `0x81..0x03`, Interface 1 LIN placeholder `0x84..0x06`) |
-| **CAN-FD (`CAN1`)** | `PD0` (`CAN1_RX`, AF9), `PD1` (`CAN1_TX`, AF9), **`PB7` (`CAN_STB` LOW)** | `CAN1` clocked from `PCLK = 160 MHz` (`2 * 80 MHz` PCAN reference clock). **`PB7` is driven LOW** to keep the onboard CAN-FD transceiver active in normal mode. |
+| **CAN-FD (`CAN1`)** | `PD0` (`CAN1_RX`, AF9), `PD1` (`CAN1_TX`, AF9), **`PB7` (`CAN_STB` LOW)** | Clocked from `PCLK = 160 MHz` (`2 * 80 MHz` PCAN reference clock). **`PB7` is driven LOW** to keep the onboard CAN-FD transceiver active in normal mode. |
+| **CAN-FD (`CAN2`)** | `PB5` (`CAN2_RX`, AF9 w/ pull-up), `PB13` (`CAN2_TX`, AF9) | Clocked from `PCLK = 160 MHz`. `PB5` uses an internal pull-up so unpopulated boards without a `CAN2` transceiver stay recessive HIGH without spurious bus errors. |
 | **Timestamps** | `TMR2` (32-bit, `1 MHz` / `1 us` resolution) | Plus `1 ms` `SysTick` timebase for LEDs & bus-load timers |
-| **Status LEDs** | `LED2` (`PD13`) USB Status, `LED3` (`PD14`) CAN1 RX, `LED4` (`PD15`) CAN1 TX | Active-LOW board LEDs |
+| **Status LEDs** | `LED2` (`PD13`) USB Status, `LED3` (`PD14`) CAN1/2 RX, `LED4` (`PD15`) CAN1/2 TX | Active-LOW board LEDs |
 
 ## USB Identifiers Notice
 
