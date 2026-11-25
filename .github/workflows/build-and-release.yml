@@ -1,4 +1,4 @@
-name: Build and Release STM32H745I-DISCO Firmware
+name: Build and Release HPM5300EVK Firmware
 
 on:
   push:
@@ -16,9 +16,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
+env:
+  HPM_SDK_REPO: https://github.com/hpmicro/hpm_sdk.git
+  HPM_SDK_TAG: v1.13.0
+  HPM_SDK_SHA: ccc5ec467a047f3ea85cd2fa4565e91db7135a38
+  XT_VERSION: 15.2.0-1
+  XT_DIR: xpack-riscv-none-elf-gcc-15.2.0-1
+
 jobs:
   build:
-    name: Build CM7 & CM4 Firmware
+    name: Build HPM5300EVK Firmware
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -26,36 +33,73 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install ARM GCC toolchain and Ninja
+      - name: Restore RISC-V GCC toolchain
+        id: xt
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/${{ env.XT_DIR }}
+          key: xt-${{ env.XT_VERSION }}-linux-x64
+
+      - name: Install RISC-V GCC toolchain
+        if: steps.xt.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          dest="${{ runner.temp }}/${XT_DIR}"
+          url=$(curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 \
+            "https://api.github.com/repos/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/tags/v${XT_VERSION}" \
+            | jq -r '.assets[].browser_download_url' | grep -m1 'linux-x64.tar.gz$')
+          echo "Downloading ${url}"
+          curl -fsSL --retry 3 --retry-all-errors --retry-delay 5 "${url}" \
+            | tar -xz -C "${{ runner.temp }}"
+          test -x "${dest}/bin/riscv-none-elf-gcc"
+          "${dest}/bin/riscv-none-elf-gcc" --version | head -1
+
+      - name: Install Ninja
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ninja-build \
-            gcc-arm-none-eabi \
-            binutils-arm-none-eabi \
-            libnewlib-arm-none-eabi \
-            libstdc++-arm-none-eabi-newlib
+          sudo apt-get install -y --no-install-recommends ninja-build
           cmake --version
           ninja --version
-          arm-none-eabi-gcc --version
 
-      - name: Build CM7 (Debug & Release)
-        working-directory: CM7
-        run: |
-          cmake --preset Debug
-          cmake --build --preset Debug --parallel
-          cmake --preset Release
-          cmake --build --preset Release --parallel
+      - name: Restore HPM SDK (${{ env.HPM_SDK_TAG }})
+        id: sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hpm_sdk
+          key: hpm-sdk-${{ env.HPM_SDK_SHA }}
 
-      - name: Build CM4 (Debug & Release)
-        working-directory: CM4
+      - name: Fetch HPM SDK (${{ env.HPM_SDK_TAG }})
+        if: steps.sdk.outputs.cache-hit != 'true'
         run: |
-          cmake --preset Debug
-          cmake --build --preset Debug --parallel
-          cmake --preset Release
-          cmake --build --preset Release --parallel
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch "${HPM_SDK_TAG}" \
+            "${HPM_SDK_REPO}" "${{ runner.temp }}/hpm_sdk"
+          test "$(git -C "${{ runner.temp }}/hpm_sdk" rev-parse HEAD)" = "${HPM_SDK_SHA}"
+
+      - name: Build Debug & Release (hpm5300evk)
+        env:
+          HPM_SDK_BASE: ${{ runner.temp }}/hpm_sdk
+          GNURISCV_TOOLCHAIN_PATH: ${{ runner.temp }}/${{ env.XT_DIR }}
+        run: |
+          set -euo pipefail
+          echo "${GNURISCV_TOOLCHAIN_PATH}/bin" >> "$GITHUB_PATH"
+          export PATH="${GNURISCV_TOOLCHAIN_PATH}/bin:${PATH}"
+
+          cmake --preset hpm5300evk-debug
+          cmake --build --preset hpm5300evk-debug --parallel 2>&1 | tee build-debug.log
+
+          cmake --preset hpm5300evk-release
+          cmake --build --preset hpm5300evk-release --parallel 2>&1 | tee build-release.log
+
+          if grep -E "warning:" build-debug.log build-release.log \
+               | grep -vE "(hpm_sdk|cherryusb)/"; then
+            echo "::error::Compiler warnings detected in project sources"
+            exit 1
+          fi
 
       - name: Package Release firmware assets and checksums
+        env:
+          GNURISCV_TOOLCHAIN_PATH: ${{ runner.temp }}/${{ env.XT_DIR }}
         shell: bash
         run: |
           set -euo pipefail
@@ -68,31 +112,28 @@ jobs:
           dist="${GITHUB_WORKSPACE}/dist"
           mkdir -p "${dist}"
 
-          for core in CM7 CM4; do
-            target="PCAN_STM32H745I_${core}"
-            build_dir="${GITHUB_WORKSPACE}/${core}/build/Release"
-            for suffix in elf hex bin map; do
-              src="${build_dir}/${target}.${suffix}"
-              test -s "${src}"
-              cp "${src}" "${dist}/${target}-${VERSION}.${suffix}"
-            done
+          target="HPM5300EVK_PCAN_FD"
+          build_dir="${GITHUB_WORKSPACE}/build/hpm5300evk-release/output"
+          for suffix in elf hex bin map; do
+            src="${build_dir}/${target}.${suffix}"
+            test -s "${src}"
+            cp "${src}" "${dist}/${target}-${VERSION}.${suffix}"
           done
 
-          arm-none-eabi-size \
-            "${GITHUB_WORKSPACE}/CM7/build/Release/PCAN_STM32H745I_CM7.elf" \
-            "${GITHUB_WORKSPACE}/CM4/build/Release/PCAN_STM32H745I_CM4.elf" \
-            > "${dist}/PCAN_STM32H745I-${VERSION}.size.txt"
+          "${GNURISCV_TOOLCHAIN_PATH}/bin/riscv-none-elf-size" \
+            "${build_dir}/${target}.elf" \
+            > "${dist}/${target}-${VERSION}.size.txt"
 
           {
-            printf 'project=%s\n' "PCAN_STM32H745I"
+            printf 'project=%s\n' "${target}"
             printf 'version=%s\n' "${VERSION}"
             printf 'ref=%s\n' "${GITHUB_REF}"
             printf 'commit=%s\n' "${GITHUB_SHA}"
-            printf 'target=STM32H745I-DISCO (Dual-Core CM7 + CM4)\n'
-            printf 'cm7_flash_address=0x08000000\n'
-            printf 'cm4_flash_address=0x08100000\n'
-            printf 'build_type=Release\n'
-          } > "${dist}/PCAN_STM32H745I-${VERSION}.manifest.txt"
+            printf 'target=HPM5300EVK (HPM5361)\n'
+            printf 'build_type=flash_xip Release\n'
+            printf 'usb_speed=High-Speed (480 Mbps, 512 B Bulk, CherryUSB)\n'
+            printf 'can_controller=HPM_MCAN3 (PY04/PY05, 80 MHz)\n'
+          } > "${dist}/${target}-${VERSION}.manifest.txt"
 
           (
             cd "${dist}"
@@ -101,25 +142,24 @@ jobs:
           )
 
           {
-            echo "## STM32H745I-DISCO Firmware Size Summary (\`${VERSION}\`)"
+            echo "## HPM5300EVK Firmware Size Summary (\`${VERSION}\`)"
             echo ""
             echo "### Debug"
             echo '```text'
-            arm-none-eabi-size \
-              "${GITHUB_WORKSPACE}/CM7/build/Debug/PCAN_STM32H745I_CM7.elf" \
-              "${GITHUB_WORKSPACE}/CM4/build/Debug/PCAN_STM32H745I_CM4.elf"
+            "${GNURISCV_TOOLCHAIN_PATH}/bin/riscv-none-elf-size" \
+              "${GITHUB_WORKSPACE}/build/hpm5300evk-debug/output/${target}.elf"
             echo '```'
             echo ""
             echo "### Release"
             echo '```text'
-            cat "${dist}/PCAN_STM32H745I-${VERSION}.size.txt"
+            cat "${dist}/${target}-${VERSION}.size.txt"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stm32h745i-disco-xcan-fd-firmware
+          name: HPM5300EVK_PCAN_FD-firmware
           path: dist/
           if-no-files-found: error
           retention-days: 30
@@ -135,7 +175,7 @@ jobs:
       - name: Download packaged firmware
         uses: actions/download-artifact@v4
         with:
-          name: stm32h745i-disco-xcan-fd-firmware
+          name: HPM5300EVK_PCAN_FD-firmware
           path: dist
 
       - name: Verify release checksums

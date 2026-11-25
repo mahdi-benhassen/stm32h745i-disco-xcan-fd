@@ -1,38 +1,49 @@
 {
-    "version": 3,
-    "configurePresets": [
-        {
-            "name": "default",
-            "hidden": true,
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/gcc-arm-none-eabi.cmake",
-            "cacheVariables": {
-            }
-        },
-        {
-            "name": "Debug",
-            "inherits": "default",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
-            }
-        },
-        {
-            "name": "Release",
-            "inherits": "default",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
-            }
-        }
-    ],
-    "buildPresets": [
-        {
-            "name": "Debug",
-            "configurePreset": "Debug"
-        },
-        {
-            "name": "Release",
-            "configurePreset": "Release"
-        }
-    ]
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 13,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "BOARD": "hpm5300evk",
+        "HPM_BUILD_TYPE": "flash_xip",
+        "CUSTOM_TARGET_TRIPLET": "riscv-none-elf",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "hpm5300evk-debug",
+      "displayName": "HPM5300EVK - flash_xip (Debug)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/hpm5300evk-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "hpm5300evk-release",
+      "displayName": "HPM5300EVK - flash_xip (Release)",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/hpm5300evk-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "hpm5300evk-debug",
+      "configurePreset": "hpm5300evk-debug"
+    },
+    {
+      "name": "hpm5300evk-release",
+      "configurePreset": "hpm5300evk-release"
+    }
+  ]
 }

@@ -1,44 +1,43 @@
-# stm32h745i-disco-xcan-fd
+# XCAN-FD Firmware — HPMicro HPM5300EVK (`HPM5361`) High-Speed CherryUSB Port
 
-Dual-channel USB-to-CAN-FD adapter firmware for the **STM32H745I-DISCO** board, porting [moonglow/pcan_pro_x](https://github.com/moonglow/pcan_pro_x) (`PCAN_PRO_FD=1`, `INCLUDE_LIN_INTERFACE=1`) to STM32H745 dual-core (`CM7` + `CM4`) with hardware `FDCAN1`/`FDCAN2`.
+This branch (`hpm5300evk`) ports the `PCAN-USB Pro FD` compatible firmware (`PCAN_PRO_FD=1`, `INCLUDE_LIN_INTERFACE=1`) to the **HPMicro `HPM5300EVK`** evaluation board (`HPM5361` RISC-V, **`hpm_sdk v1.13.0` + CherryUSB USB 2.0 High-Speed + Bosch MCAN3**).
 
-## Hardware Mapping (STM32H745I-DISCO / MB1381)
+> Looking for other targets? Switch branches:
+> - `main`: STM32H745I-DISCO (`CMake` / ARM GCC, dual FDCAN)
+> - `keil-mdk`: STM32H745I-DISCO (Keil MDK-ARM v5)
+> - `at-start-f457`: Artery `AT-START-F457` (`AT32F457ZET7`, dual CAN-FD `CAN1`+`CAN2`, CMake + Keil MDK-ARM v5)
 
-| Subsystem | Assignment | Notes |
+## Why HPM5300EVK + CherryUSB?
+
+Unlike Full-Speed-only USB PHYs (12 Mbps / 64 B packets), the **`HPM5361`** integrates a **480 Mbps USB 2.0 High-Speed PHY (`USB0`)** backed by DMA + non-cacheable QHD/QTD descriptors in **CherryUSB**. This enables native **512-byte High-Speed Bulk** endpoints (`PCAN_HS_MAX_BULK_PACKET_SIZE = 512`) alongside hardware **Bosch MCAN (`MCAN3`)**, matching genuine PCAN-USB Pro FD USB High-Speed framing for heavy UDS / CAN-FD burst traffic and OTA flashing.
+
+## Hardware & Clock Mapping (Verified Against HPM5300EVK Schematic)
+
+| Resource | Pin / Instance | Notes |
 |---|---|---|
-| **Power & Clock** | `PWR_DIRECT_SMPS_SUPPLY`, `VOS1`, `25 MHz` HSE | `CM7` = `400 MHz`, `HCLK/CM4/TIM2` = `200 MHz`, `PLL1Q` (`FDCAN`) = `80.0 MHz`, `PLL3Q` (`USB`) = `48.0 MHz` |
-| **FDCAN1 (Channel 0)** | `PH13` (TX), `PH14` (RX) | Onboard 5 Mbps transceiver, 1280-word Message RAM offset `0` |
-| **FDCAN2 (Channel 1)** | `PB13` (TX), `PB5` (RX) | Onboard 5 Mbps transceiver, 1280-word Message RAM offset `1280` |
-| **USB OTG FS** | `CN13` (`PA11` DM, `PA12` DP) | Full-Speed `64 B` bulk composite descriptor, polled via `pcan_usb_device_poll()` |
-| **Timestamp** | `TIM2` (32-bit, `PSC = 200 - 1`) | Free-running `1.0 µs` tick extended to 64-bit timestamps |
-| **LEDs (Active-LOW)** | `LED1` (`PJ2`, Green) / `LED2` (`PI13`, Red) | `LED1` = device status, `LED2` = dual-channel CAN RX/TX activity |
-| **Cortex-M4** | `CM4` idle loop (`__WFI()`) | Required for `DUAL_CORE_BOOT_SYNC_SEQUENCE` (HSEM wakeup) |
+| **MCU / Board** | `HPM5361` on `HPM5300EVK` | Built with `HPM_BUILD_TYPE=flash_xip` |
+| **USB 2.0 High-Speed (`USB0`)** | `PA24` (`USB0_N`), `PA25` (`USB0_P`) -> `J1` Type-C | 480 Mbps HS (`wMaxPacketSize = 512`, FS fallback `64`), `bInterfaceClass = 0x00`, 2 interfaces (CAN-FD `0x81..0x03`, LIN `0x84..0x06`) |
+| **CAN-FD (`HPM_MCAN3`)** | `PY04` (`CAN3_RXD`), `PY05` (`CAN3_TXD`) -> `U10` (`TJA1042T/3`) -> `J9` | `TJA1042T/3` `STB` is tied to GND via `10 kOhm` (`R67`, active normal mode). Split `120 Ohm` termination onboard. Clocked at **`80.0 MHz`** (`clk_src_pll1_clk0`). |
+| **Status LED** | `PA23` (active-LOW: `0` = ON, `1` = OFF) | Slow/fast USB status blink + brief activity flicker on CAN RX/TX |
+| **Timestamps** | RISC-V `mcycle` CSR | Monotonic `1 us` resolution derived from `clock_cpu0` |
 
-## Building (CMake + Ninja + ARM GCC)
+## USB Identifiers Notice
 
-Configure and build both cores (`CM4` and `CM7`):
+Open-source development defaults (`0x0483` / `0x0011`, `"XCAN"` / `"XCAN-USB Pro FD"`) are isolated in [`app/pcan/pcan_usb_ids.h`](app/pcan/pcan_usb_ids.h).
 
+## Building
+
+### Option 1: CMake + RISC-V GCC (`hpm_sdk v1.13.0`)
+Set `HPM_SDK_BASE` to your `hpm_sdk` v1.13.0 folder and ensure `riscv-none-elf-gcc` (or `riscv32-unknown-elf-gcc`) + Ninja are on `PATH`:
 ```bash
-cmake --preset Release -S CM4
-cmake --build --preset Release -S CM4 --parallel
-
-cmake --preset Release -S CM7
-cmake --build --preset Release -S CM7 --parallel
+cmake --preset hpm5300evk-release
+cmake --build --preset hpm5300evk-release --parallel
 ```
+Outputs (`.elf`, `.hex`, `.bin`, `.map`) are written to `build/hpm5300evk-release/output/`.
 
-Outputs (`.elf`, `.hex`, `.bin`, `.map`) are generated in `CM4/build/Release/` and `CM7/build/Release/`.
-
-## Flashing (Dual-Core)
-
-Both binaries **must** be programmed so `CM7` and `CM4` complete dual-core HSEM boot synchronization:
-
-* **CM7 (`PCAN_STM32H745I_CM7.bin`):** Flash Bank 1 `0x08000000`
-* **CM4 (`PCAN_STM32H745I_CM4.bin`):** Flash Bank 2 `0x08100000`
-
-## USB Identity Configuration
-
-This repository ships with open-source default USB identifiers (`VID 0x0483`, `PID 0x0011`, manufacturer `"XCAN"`, product `"XCAN-USB Pro FD"`) isolated in `CM7/App/pcan/pcan_usb_ids.h`. You can customize `PCAN_USB_VID`, `PCAN_USB_PID`, and the descriptor strings locally via `CM7/App/pcan/pcan_usb_ids.h` or CMake `-D` compiler definitions without editing driver sources.
-
-## Attribution
-
-Based on the protocol and firmware architecture of [moonglow/pcan_pro_x](https://github.com/moonglow/pcan_pro_x), ported to STM32CubeH7 HAL `FDCAN` and USB Device Library v2.11 for STM32H745I-DISCO.
+### Option 2: HPM SDK Project Generator + Segger Embedded Studio (SES)
+The root [`CMakeLists.txt`](CMakeLists.txt) invokes `generate_ide_projects()`, so you can also open the repository in **`HPM SDK Project Generator`**:
+1. Set **SDK Boards** = `hpm5300evk`
+2. Point **User Application Path** to this repo (`Enable User Application Path`), **Build Type** = `flash_xip`
+3. Click **Generate**
+4. Click **Open with IDE (SES)** to build and flash/debug in Segger Embedded Studio.
