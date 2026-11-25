@@ -4,6 +4,14 @@
 #include "board.h"
 #include "hpm_soc.h"
 #include "hpm_interrupt.h"
+
+#ifndef BOARD_USB_BASE
+#define BOARD_USB_BASE HPM_USB0
+#endif
+#ifndef BOARD_USB_IRQn
+#define BOARD_USB_IRQn IRQn_USB0
+#endif
+
 #include "usbd_core.h"
 #include "hpm_usbd_compat.h"
 #include "pcan_usb_ids.h"
