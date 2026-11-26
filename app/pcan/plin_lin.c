@@ -11,10 +11,11 @@
 #include "plin_lin.h"
 #include "plin_protocol.h"
 
-#define LIN_RX_RING_SIZE  128U
-#define LIN_RX_RING_MASK  (LIN_RX_RING_SIZE - 1U)
-#define LIN_TXQ_LEN       8U
-#define LIN_WAKEUP_US     400U
+#define LIN_RX_RING_SIZE    128U
+#define LIN_RX_RING_MASK    (LIN_RX_RING_SIZE - 1U)
+#define LIN_RX_BREAK_MARKER 0x0100U
+#define LIN_TXQ_LEN         8U
+#define LIN_WAKEUP_US       400U
 
 struct lin_tx_request
 {
@@ -56,10 +57,9 @@ struct lin_channel
   uint32_t next_slot_ms;
   uint16_t slot_delay;
 
-  volatile uint8_t  rx_ring[LIN_RX_RING_SIZE];
+  volatile uint16_t rx_ring[LIN_RX_RING_SIZE];
   volatile uint8_t  rx_head;
   volatile uint8_t  rx_tail;
-  volatile uint8_t  break_flag;
 
   /* Non-blocking break & TX tracking */
   uint32_t break_deadline_us;
@@ -134,38 +134,55 @@ static uint8_t lin_checksum(uint8_t id, uint8_t pid, uint8_t type,
   return (uint8_t)(~sum);
 }
 
-static void lin_push_rx(struct lin_channel *chan, uint8_t data)
+static uint32_t lin_tx_timeout_ms(uint8_t tx_len, uint16_t baudrate)
+{
+  uint16_t baud = (baudrate > 0U) ? baudrate : 19200U;
+  return 15U + (((uint32_t)tx_len * 12000U) / baud);
+}
+
+static void lin_push_rx(struct lin_channel *chan, uint16_t item)
 {
   uint8_t next = (uint8_t)((chan->rx_head + 1U) & LIN_RX_RING_MASK);
   if (next != chan->rx_tail)
   {
-    chan->rx_ring[chan->rx_head] = data;
+    chan->rx_ring[chan->rx_head] = item;
+    __asm volatile("" ::: "memory");
     chan->rx_head = next;
   }
 }
 
-static int lin_pop_rx(struct lin_channel *chan, uint8_t *data)
+static int lin_pop_rx(struct lin_channel *chan, uint16_t *item)
 {
   if (chan->rx_tail == chan->rx_head)
   {
     return 0;
   }
 
-  *data = chan->rx_ring[chan->rx_tail];
+  *item = chan->rx_ring[chan->rx_tail];
+  __asm volatile("" ::: "memory");
   chan->rx_tail = (uint8_t)((chan->rx_tail + 1U) & LIN_RX_RING_MASK);
   return 1;
 }
 
 static void lin_flush_rx(struct lin_channel *chan)
 {
-  if (chan->uart != NULL)
+  if (chan->is_physical != 0U)
   {
-    uart_clear_rx_fifo(chan->uart);
-    (void)uart_get_status(chan->uart);
+    intc_m_disable_irq(BOARD_UART_LIN_IRQ);
+    if (chan->uart != NULL)
+    {
+      uart_clear_rx_fifo(chan->uart);
+      (void)uart_get_status(chan->uart);
+    }
+    chan->rx_head = 0U;
+    chan->rx_tail = 0U;
+    intc_m_enable_irq(BOARD_UART_LIN_IRQ);
   }
-  chan->rx_head = 0U;
-  chan->rx_tail = 0U;
-  chan->break_flag = 0U;
+  else
+  {
+    chan->rx_head = 0U;
+    chan->rx_tail = 0U;
+  }
 }
 
 static void lin_report(struct lin_channel *chan, uint8_t pid, uint8_t length,
@@ -280,7 +297,7 @@ static void lin_poll_break_and_tx(struct lin_channel *chan)
 
       if (chan->rx_expected > 0U)
       {
-        uart_enable_irq(uart, uart_intr_rx_data_avail_or_timeout | uart_intr_rx_line_stat);
+        uart_enable_irq(uart, uart_intr_rx_data_avail_or_timeout);
       }
 
       for (uint8_t i = 0U; i < chan->tx_len; i++)
@@ -289,7 +306,7 @@ static void lin_poll_break_and_tx(struct lin_channel *chan)
       }
 
       chan->tx_echo_skip = chan->tx_len;
-      chan->tx_deadline_ms = now_ms + 30U;
+      chan->tx_deadline_ms = now_ms + lin_tx_timeout_ms(chan->tx_len, chan->baudrate);
       chan->phase = LIN_PHASE_TX;
     }
     return;
@@ -344,8 +361,10 @@ static void lin_poll_break_and_tx(struct lin_channel *chan)
     lin_report(chan, chan->frame_pid, chan->frame_len, 1U,
                chan->frame_cs, chan->frame_error,
                chan->tx_buf[chan->frame_len], chan->tx_buf);
+    uart_reset_rx_fifo(uart);
     lin_flush_rx(chan);
     chan->parse_state = LIN_PARSE_WAIT_BREAK;
+    uart_enable_irq(uart, uart_intr_rx_data_avail_or_timeout | uart_intr_rx_line_stat);
     lin_frame_done(chan);
   }
 }
@@ -496,26 +515,31 @@ static void lin_master_start(struct lin_channel *chan)
 
 static void lin_master_poll(struct lin_channel *chan)
 {
-  uint8_t byte = 0U;
+  uint16_t item = 0U;
 
   if (chan->phase == LIN_PHASE_RX)
   {
-    while ((chan->tx_echo_skip > 0U) && (lin_pop_rx(chan, &byte) != 0))
+    while ((chan->tx_echo_skip > 0U) && (lin_pop_rx(chan, &item) != 0))
     {
-      chan->tx_echo_skip--;
+      if ((item & LIN_RX_BREAK_MARKER) == 0U)
+      {
+        chan->tx_echo_skip--;
+      }
     }
 
     while ((chan->tx_echo_skip == 0U) &&
            (chan->rx_count < chan->rx_expected) &&
-           (lin_pop_rx(chan, &byte) != 0))
+           (lin_pop_rx(chan, &item) != 0))
     {
-      if (chan->rx_count < 8U)
+      if ((item & LIN_RX_BREAK_MARKER) != 0U)
+      {
+        continue;
+      }
+
+      uint8_t byte = (uint8_t)(item & 0xFFU);
+      if (chan->rx_count < chan->frame_len)
       {
         chan->rx_data[chan->rx_count] = byte;
-      }
-      else
-      {
-        /* 9th byte for length == 8 (checksum) stored via checksum var below */
       }
       if (chan->rx_count == (uint8_t)(chan->rx_expected - 1U))
       {
@@ -586,33 +610,36 @@ static void lin_slave_start_response(struct lin_channel *chan, uint8_t id,
   chan->frame_error = 0U;
   chan->tx_len = (uint8_t)(length + 1U);
 
+  uart_disable_irq(chan->uart, uart_intr_rx_data_avail_or_timeout | uart_intr_rx_line_stat);
   for (uint8_t i = 0U; i < chan->tx_len; i++)
   {
     uart_write_byte(chan->uart, chan->tx_buf[i]);
   }
-  chan->tx_deadline_ms = pcan_timestamp_millis() + 30U;
+  chan->tx_deadline_ms = pcan_timestamp_millis() + lin_tx_timeout_ms(chan->tx_len, chan->baudrate);
   chan->phase = LIN_PHASE_TX_SLAVE;
 }
 
 static void lin_slave_poll(struct lin_channel *chan)
 {
   uint8_t channel = (uint8_t)(chan - lin_channels);
-  uint8_t byte = 0U;
+  uint16_t item = 0U;
 
   if (chan->phase != LIN_PHASE_IDLE)
   {
     return;
   }
 
-  if (chan->break_flag != 0U)
+  while (lin_pop_rx(chan, &item) != 0)
   {
-    chan->break_flag = 0U;
-    chan->parse_state = LIN_PARSE_WAIT_SYNC;
-    chan->parse_count = 0U;
-  }
+    if ((item & LIN_RX_BREAK_MARKER) != 0U)
+    {
+      chan->parse_state = LIN_PARSE_WAIT_SYNC;
+      chan->parse_count = 0U;
+      chan->last_rx_ms = pcan_timestamp_millis();
+      continue;
+    }
 
-  while (lin_pop_rx(chan, &byte) != 0)
-  {
+    uint8_t byte = (uint8_t)(item & 0xFFU);
     chan->last_rx_ms = pcan_timestamp_millis();
 
     switch (chan->parse_state)
@@ -719,9 +746,13 @@ static void lin_uart_configure(struct lin_channel *chan, uint16_t baudrate)
   uart_reset_all_fifo(uart);
   lin_flush_rx(chan);
 
-  if (chan->mode != PLIN_LIN_MODE_NONE)
+  if (chan->mode == PLIN_LIN_MODE_SLAVE)
   {
     uart_enable_irq(uart, uart_intr_rx_data_avail_or_timeout | uart_intr_rx_line_stat);
+  }
+  else if (chan->mode == PLIN_LIN_MODE_MASTER)
+  {
+    uart_enable_irq(uart, uart_intr_rx_data_avail_or_timeout);
   }
 }
 
@@ -742,27 +773,33 @@ void plin_uart3_isr(void)
     uint32_t lsr = uart_get_status(uart);
     if ((lsr & uart_stat_line_break) != 0U)
     {
-      chan->break_flag = 1U;
+      lin_push_rx(chan, LIN_RX_BREAK_MARKER);
       if ((lsr & uart_stat_data_ready) != 0U)
       {
-        (void)uart_read_byte(uart); /* discard break 0x00 byte */
+        uint8_t brk_b = uart_read_byte(uart);
+        if (brk_b != 0U)
+        {
+          lin_push_rx(chan, brk_b);
+        }
         lsr = uart_get_status(uart);
-      }
-      if (chan->mode == PLIN_LIN_MODE_SLAVE)
-      {
-        chan->rx_head = 0U;
-        chan->rx_tail = 0U;
       }
     }
 
     while ((lsr & uart_stat_data_ready) != 0U)
     {
       uint8_t byte = uart_read_byte(uart);
-      lin_push_rx(chan, byte);
       lsr = uart_get_status(uart);
       if ((lsr & uart_stat_line_break) != 0U)
       {
-        chan->break_flag = 1U;
+        lin_push_rx(chan, LIN_RX_BREAK_MARKER);
+        if (byte != 0U)
+        {
+          lin_push_rx(chan, byte);
+        }
+      }
+      else
+      {
+        lin_push_rx(chan, byte);
       }
     }
   }

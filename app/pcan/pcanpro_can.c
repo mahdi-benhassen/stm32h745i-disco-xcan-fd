@@ -5,6 +5,7 @@
 #include "hpm_mcan_drv.h"
 #include "hpm_mcan_regs.h"
 #include "pcanpro_timestamp.h"
+#include "pcanpro_protocol.h"
 #include "pcanpro_can.h"
 
 #define CAN_TX_FIFO_SIZE  (128U)
@@ -237,14 +238,14 @@ static void can_apply_config(struct t_can_dev *dev)
 
   cfg.use_lowlevel_timing_setting = true;
   cfg.can_timing.prescaler = (uint16_t)clamp_u32(dev->nom_timing.brp, 1U, 512U);
-  cfg.can_timing.num_seg1 = (uint16_t)clamp_u32(dev->nom_timing.tseg1, 1U, 256U);
-  cfg.can_timing.num_seg2 = (uint8_t)clamp_u32(dev->nom_timing.tseg2, 1U, 128U);
+  cfg.can_timing.num_seg1 = (uint16_t)clamp_u32(dev->nom_timing.tseg1, 1U, 255U);
+  cfg.can_timing.num_seg2 = (uint8_t)clamp_u32(dev->nom_timing.tseg2, 2U, 128U);
   cfg.can_timing.num_sjw = (uint8_t)clamp_u32(dev->nom_timing.sjw, 1U, cfg.can_timing.num_seg2);
   cfg.can_timing.enable_tdc = false;
 
   uint32_t dbrp = clamp_u32(dev->data_timing.brp, 1U, 32U);
-  uint32_t dtseg1 = clamp_u32(dev->data_timing.tseg1, 1U, 32U);
-  uint32_t dtseg2 = clamp_u32(dev->data_timing.tseg2, 1U, 16U);
+  uint32_t dtseg1 = clamp_u32(dev->data_timing.tseg1, 1U, 31U);
+  uint32_t dtseg2 = clamp_u32(dev->data_timing.tseg2, 2U, 16U);
   uint32_t dsjw = clamp_u32(dev->data_timing.sjw, 1U, dtseg2);
 
   cfg.canfd_timing.prescaler = (uint16_t)dbrp;
@@ -284,7 +285,26 @@ static void can_apply_config(struct t_can_dev *dev)
   cfg.all_filters_config.global_filter_config.reject_remote_std_frame = false;
   cfg.all_filters_config.global_filter_config.reject_remote_ext_frame = false;
 
-  (void)mcan_init(base, &cfg, dev->clk_hz);
+  if (mcan_init(base, &cfg, dev->clk_hz) != status_success)
+  {
+    /* Fallback to safe 500k / 2M timing so MCAN3 never stalls in INIT mode */
+    cfg.can_timing.prescaler = 2U;
+    cfg.can_timing.num_seg1 = 63U;
+    cfg.can_timing.num_seg2 = 16U;
+    cfg.can_timing.num_sjw = 16U;
+    cfg.canfd_timing.prescaler = 2U;
+    cfg.canfd_timing.num_seg1 = 15U;
+    cfg.canfd_timing.num_seg2 = 4U;
+    cfg.canfd_timing.num_sjw = 4U;
+    if (cfg.enable_canfd)
+    {
+      cfg.enable_tdc = true;
+      cfg.canfd_timing.enable_tdc = true;
+      cfg.tdc_config.ssp_offset = 32U;
+      cfg.tdc_config.filter_window_length = 0U;
+    }
+    (void)mcan_init(base, &cfg, dev->clk_hz);
+  }
 }
 
 uint32_t pcan_can_msg_time(const struct t_can_msg *pmsg, uint32_t nt, uint32_t dt)
@@ -461,8 +481,8 @@ int pcan_can_set_nominal_timing(int bus, uint32_t brp, uint32_t tseg1, uint32_t 
 
   struct t_can_dev *dev = &can_dev_array[bus];
   dev->nom_timing.brp = (uint16_t)clamp_u32(brp, 1U, 512U);
-  dev->nom_timing.tseg1 = (uint16_t)clamp_u32(tseg1, 1U, 256U);
-  dev->nom_timing.tseg2 = (uint8_t)clamp_u32(tseg2, 1U, 128U);
+  dev->nom_timing.tseg1 = (uint16_t)clamp_u32(tseg1, 1U, 255U);
+  dev->nom_timing.tseg2 = (uint8_t)clamp_u32(tseg2, 2U, 128U);
   dev->nom_timing.sjw = (uint8_t)clamp_u32(sjw, 1U, dev->nom_timing.tseg2);
 
   can_apply_config(dev);
@@ -478,8 +498,8 @@ int pcan_can_set_data_timing(int bus, uint32_t brp, uint32_t tseg1, uint32_t tse
 
   struct t_can_dev *dev = &can_dev_array[bus];
   dev->data_timing.brp = (uint16_t)clamp_u32(brp, 1U, 32U);
-  dev->data_timing.tseg1 = (uint16_t)clamp_u32(tseg1, 1U, 32U);
-  dev->data_timing.tseg2 = (uint8_t)clamp_u32(tseg2, 1U, 16U);
+  dev->data_timing.tseg1 = (uint16_t)clamp_u32(tseg1, 1U, 31U);
+  dev->data_timing.tseg2 = (uint8_t)clamp_u32(tseg2, 2U, 16U);
   dev->data_timing.sjw = (uint8_t)clamp_u32(sjw, 1U, dev->data_timing.tseg2);
 
   can_apply_config(dev);
@@ -593,7 +613,7 @@ static void can_poll_rx_fifo(int bus)
 
   for (uint32_t i = 0U; i < CAN_RX_POLL_BATCH; i++)
   {
-    if (MCAN_RXF0S_F0FL_GET(base->RXF0S) == 0U)
+    if ((MCAN_RXF0S_F0FL_GET(base->RXF0S) == 0U) || (pcan_protocol_can_rx_has_space() == 0))
     {
       break;
     }

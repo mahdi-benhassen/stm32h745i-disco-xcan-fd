@@ -122,6 +122,42 @@ static void *pcan_data_alloc_buffer(uint16_t type, uint16_t size)
   return pmsg;
 }
 
+static int pcan_protocol_try_flush_data(void)
+{
+  if (data_pos == 0U)
+  {
+    return 0;
+  }
+
+  uint16_t flush_size = (uint16_t)((data_pos + 4U + 63U) & ~63U);
+  if (flush_size > (uint16_t)sizeof(data_buffer))
+  {
+    flush_size = (uint16_t)sizeof(data_buffer);
+  }
+  if (flush_size > data_pos)
+  {
+    memset(&data_buffer[data_pos], 0, (size_t)(flush_size - data_pos));
+  }
+
+  if (pcan_flush_data(&resp_fsm[1], data_buffer, (int)flush_size) != 0)
+  {
+    data_pos = 0U;
+    pcan_device.last_time_flush = pcan_timestamp_us();
+    return 1;
+  }
+
+  return 0;
+}
+
+int pcan_protocol_can_rx_has_space(void)
+{
+  if (((uint32_t)sizeof(data_buffer) - (uint32_t)data_pos) >= 96U)
+  {
+    return 1;
+  }
+  return pcan_protocol_try_flush_data();
+}
+
 uint8_t pcan_protocol_device_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req)
 {
   switch (req->bRequest)
@@ -249,9 +285,14 @@ uint8_t pcan_protocol_device_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypede
   }
 }
 
-void pcan_ep0_receive(void)
+void pcan_ep0_receive_data(const uint8_t *buf, uint16_t len)
 {
-  if (drv_load_packet[0] == 0U)
+  if ((buf == NULL) || (len < 2U))
+  {
+    return;
+  }
+
+  if (buf[0] == 0U)
   {
     (void)pcan_flush_ep(PCAN_USB_EP_MSGIN_CH1);
     (void)pcan_flush_ep(PCAN_USB_EP_CMDIN);
@@ -259,14 +300,14 @@ void pcan_ep0_receive(void)
     resp_fsm[1].state = 0U;
     data_pos = 0U;
     memset(tx_reasm_len, 0, sizeof(tx_reasm_len));
-    pcan_device.can_drv_loaded = drv_load_packet[1];
+    pcan_device.can_drv_loaded = buf[1];
     pcan_led_set_mode(LED_STAT,
                       (pcan_device.can_drv_loaded != 0U) ? LED_MODE_BLINK_SLOW : LED_MODE_BLINK_FAST,
                       0xFFFFFFFFU);
   }
   else
   {
-    pcan_device.lin_drv_loaded = drv_load_packet[1];
+    pcan_device.lin_drv_loaded = buf[1];
     pcan_usb_flush_lin_eps();
     plin_protocol_on_driver_state(pcan_device.lin_drv_loaded);
   }
@@ -292,11 +333,18 @@ static int pcan_protocol_rx_frame(uint8_t channel, struct t_can_msg *pmsg)
   }
 
   uint8_t payload_len = (pmsg->size > CAN_PAYLOAD_MAX_SIZE) ? (uint8_t)CAN_PAYLOAD_MAX_SIZE : pmsg->size;
-  struct ucan_rx_msg *pcan_msg = pcan_data_alloc_buffer(
-      UCAN_MSG_CAN_RX, (uint16_t)(sizeof(struct ucan_rx_msg) + payload_len));
+  uint16_t rec_size = (uint16_t)(sizeof(struct ucan_rx_msg) + payload_len);
+  struct ucan_rx_msg *pcan_msg = pcan_data_alloc_buffer(UCAN_MSG_CAN_RX, rec_size);
   if (pcan_msg == NULL)
   {
-    return -1;
+    if (pcan_protocol_try_flush_data() != 0)
+    {
+      pcan_msg = pcan_data_alloc_buffer(UCAN_MSG_CAN_RX, rec_size);
+    }
+    if (pcan_msg == NULL)
+    {
+      return -1;
+    }
   }
 
   if ((pmsg->flags & MSG_FLAG_ECHO) == 0U)
@@ -878,28 +926,9 @@ void pcan_protocol_init(void)
 void pcan_protocol_poll(void)
 {
   uint32_t ts_ms = pcan_timestamp_millis();
-  uint32_t ts_us = pcan_timestamp_us();
 
   pcan_can_poll();
-
-  if (data_pos > 0U)
-  {
-    uint16_t flush_size = (uint16_t)((data_pos + 4U + 63U) & ~63U);
-    if (flush_size > (uint16_t)sizeof(data_buffer))
-    {
-      flush_size = (uint16_t)sizeof(data_buffer);
-    }
-    if (flush_size > data_pos)
-    {
-      memset(&data_buffer[data_pos], 0, (size_t)(flush_size - data_pos));
-    }
-
-    if (pcan_flush_data(&resp_fsm[1], data_buffer, (int)flush_size) != 0)
-    {
-      data_pos = 0U;
-      pcan_device.last_time_flush = ts_us;
-    }
-  }
+  (void)pcan_protocol_try_flush_data();
 
   if (pcan_device.can_drv_loaded == 0U)
   {

@@ -22,6 +22,8 @@
 
 #define PCAN_USB_CONFIG_DESC_LEN  (111U)
 #define PCAN_RX_RING_SLOTS        (16U)
+#define PCAN_RX_BACKPRESSURE_MIN  (6U)
+#define PCAN_EP0_OUT_RING_SLOTS   (4U)
 #define PCAN_TX_BOUNCE_SLOTS      (4U)
 #define PCAN_TX_BOUNCE_SIZE       (2048U)
 
@@ -154,13 +156,22 @@ struct t_rx_slot
   uint8_t  data[PCAN_HS_MAX_BULK_PACKET_SIZE];
 };
 
+struct t_ep0_out_slot
+{
+  uint16_t len;
+  uint8_t  data[16];
+};
+
 static USBD_HandleTypeDef g_compat_pdev;
 static uint8_t g_ctl_in_shadow[128];
 static uint16_t g_ctl_in_len;
 static uint8_t *g_ctl_out_dst;
 static uint16_t g_ctl_out_len;
 static volatile bool g_ctl_failed;
-static volatile uint8_t g_ep0_rx_pending;
+
+static struct t_ep0_out_slot g_ep0_out_ring[PCAN_EP0_OUT_RING_SLOTS];
+static volatile uint32_t g_ep0_out_head;
+static volatile uint32_t g_ep0_out_tail;
 
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep1_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep2_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
@@ -175,9 +186,20 @@ static struct t_rx_slot g_rx_ring[PCAN_RX_RING_SLOTS];
 static volatile uint32_t g_rx_head;
 static volatile uint32_t g_rx_tail;
 
+static volatile uint8_t g_ep_rx_paused[8];
 static volatile uint8_t g_ep_tx_in_use[8];
 static volatile uint8_t g_ep_tx_need_zlp[8];
 static volatile uint16_t g_negotiated_mps = PCAN_FS_MAX_BULK_PACKET_SIZE;
+
+static const uint8_t g_out_ep_addrs[6] =
+{
+  PCAN_USB_EP_CMDOUT,
+  PCAN_USB_EP_MSGOUT_CH1,
+  PCAN_USB_EP_MSGOUT_CH2,
+  PLIN_EP_CMDOUT,
+  PLIN_EP_DATA0OUT,
+  PLIN_EP_DATA1OUT,
+};
 
 uint8_t USBD_CtlSendData(USBD_HandleTypeDef *pdev, uint8_t *pbuf, uint16_t len)
 {
@@ -241,12 +263,29 @@ static int pcan_vendor_handler(uint8_t busid, struct usb_setup_packet *setup,
 
   if (out_with_data)
   {
-    if ((g_ctl_out_dst != NULL) && (*data != NULL))
+    uint32_t n = 0U;
+    if (*data != NULL)
     {
-      uint32_t n = MIN(*len, (uint32_t)g_ctl_out_len);
-      memcpy(g_ctl_out_dst, *data, n);
+      uint32_t limit = (g_ctl_out_dst != NULL) ? (uint32_t)g_ctl_out_len : (uint32_t)sizeof(g_ep0_out_ring[0].data);
+      n = MIN(*len, limit);
+      if (n > (uint32_t)sizeof(g_ep0_out_ring[0].data))
+      {
+        n = (uint32_t)sizeof(g_ep0_out_ring[0].data);
+      }
+      if ((g_ctl_out_dst != NULL) && (n > 0U))
+      {
+        memcpy(g_ctl_out_dst, *data, n);
+      }
     }
-    g_ep0_rx_pending = 1U;
+
+    uint32_t next_ep0 = (g_ep0_out_head + 1U) % PCAN_EP0_OUT_RING_SLOTS;
+    if ((next_ep0 != g_ep0_out_tail) && (*data != NULL) && (n > 0U))
+    {
+      g_ep0_out_ring[g_ep0_out_head].len = (uint16_t)n;
+      memcpy(g_ep0_out_ring[g_ep0_out_head].data, *data, n);
+      __asm volatile("" ::: "memory");
+      g_ep0_out_head = next_ep0;
+    }
   }
 
   return 0;
@@ -309,9 +348,18 @@ static void pcan_ep_in_cb(uint8_t busid, uint8_t ep, uint32_t nbytes)
   g_ep_tx_in_use[idx] = 0U;
 }
 
+static uint32_t rx_ring_free_slots(void)
+{
+  uint32_t head = g_rx_head;
+  uint32_t tail = g_rx_tail;
+  uint32_t used = (head + PCAN_RX_RING_SLOTS - tail) % PCAN_RX_RING_SLOTS;
+  return (PCAN_RX_RING_SLOTS - 1U) - used;
+}
+
 static void pcan_ep_out_cb(uint8_t busid, uint8_t ep, uint32_t nbytes)
 {
   uint8_t *rx_buf = ep_rx_buf_for_addr(ep);
+  uint8_t ep_idx = (uint8_t)(ep & 0x0FU);
   if (rx_buf == NULL)
   {
     return;
@@ -329,15 +377,23 @@ static void pcan_ep_out_cb(uint8_t busid, uint8_t ep, uint32_t nbytes)
     {
       memcpy(g_rx_ring[g_rx_head].data, rx_buf, copy_len);
     }
+    __asm volatile("" ::: "memory");
     g_rx_head = next_head;
   }
 
-  uint16_t mps = g_negotiated_mps;
-  if ((mps != PCAN_HS_MAX_BULK_PACKET_SIZE) && (mps != PCAN_FS_MAX_BULK_PACKET_SIZE))
+  if (rx_ring_free_slots() >= PCAN_RX_BACKPRESSURE_MIN)
   {
-    mps = PCAN_HS_MAX_BULK_PACKET_SIZE;
+    uint16_t mps = g_negotiated_mps;
+    if ((mps != PCAN_HS_MAX_BULK_PACKET_SIZE) && (mps != PCAN_FS_MAX_BULK_PACKET_SIZE))
+    {
+      mps = PCAN_HS_MAX_BULK_PACKET_SIZE;
+    }
+    (void)usbd_ep_start_read(busid, ep, rx_buf, mps);
   }
-  (void)usbd_ep_start_read(busid, ep, rx_buf, mps);
+  else if (ep_idx < 8U)
+  {
+    g_ep_rx_paused[ep_idx] = 1U;
+  }
 }
 
 static void pcan_usbd_event_cb(uint8_t busid, uint8_t event)
@@ -345,10 +401,13 @@ static void pcan_usbd_event_cb(uint8_t busid, uint8_t event)
   switch (event)
   {
     case USBD_EVENT_RESET:
+      memset((void *)g_ep_rx_paused, 0, sizeof(g_ep_rx_paused));
       memset((void *)g_ep_tx_in_use, 0, sizeof(g_ep_tx_in_use));
       memset((void *)g_ep_tx_need_zlp, 0, sizeof(g_ep_tx_need_zlp));
       g_rx_head = 0U;
       g_rx_tail = 0U;
+      g_ep0_out_head = 0U;
+      g_ep0_out_tail = 0U;
       g_compat_pdev.dev_state = 0U;
       break;
 
@@ -361,15 +420,15 @@ static void pcan_usbd_event_cb(uint8_t busid, uint8_t event)
       }
       g_negotiated_mps = mps;
       g_compat_pdev.dev_state = 1U;
+      memset((void *)g_ep_rx_paused, 0, sizeof(g_ep_rx_paused));
       memset((void *)g_ep_tx_in_use, 0, sizeof(g_ep_tx_in_use));
       memset((void *)g_ep_tx_need_zlp, 0, sizeof(g_ep_tx_need_zlp));
 
-      (void)usbd_ep_start_read(busid, PCAN_USB_EP_CMDOUT, g_ep1_rx_buf, mps);
-      (void)usbd_ep_start_read(busid, PCAN_USB_EP_MSGOUT_CH1, g_ep2_rx_buf, mps);
-      (void)usbd_ep_start_read(busid, PCAN_USB_EP_MSGOUT_CH2, g_ep3_rx_buf, mps);
-      (void)usbd_ep_start_read(busid, PLIN_EP_CMDOUT, g_ep4_rx_buf, mps);
-      (void)usbd_ep_start_read(busid, PLIN_EP_DATA0OUT, g_ep5_rx_buf, mps);
-      (void)usbd_ep_start_read(busid, PLIN_EP_DATA1OUT, g_ep6_rx_buf, mps);
+      for (uint8_t i = 0U; i < (uint8_t)(sizeof(g_out_ep_addrs) / sizeof(g_out_ep_addrs[0])); i++)
+      {
+        uint8_t ep = g_out_ep_addrs[i];
+        (void)usbd_ep_start_read(busid, ep, ep_rx_buf_for_addr(ep), mps);
+      }
       break;
     }
 
@@ -383,10 +442,7 @@ static struct usbd_interface g_intf_can =
   .vendor_handler = pcan_vendor_handler,
 };
 
-static struct usbd_interface g_intf_lin =
-{
-  .vendor_handler = pcan_vendor_handler,
-};
+static struct usbd_interface g_intf_lin;
 
 static struct usbd_endpoint g_ep_cmd_in      = { .ep_addr = PCAN_USB_EP_CMDIN,      .ep_cb = pcan_ep_in_cb };
 static struct usbd_endpoint g_ep_cmd_out     = { .ep_addr = PCAN_USB_EP_CMDOUT,     .ep_cb = pcan_ep_out_cb };
@@ -429,10 +485,18 @@ void pcan_usb_device_init(void)
 
 void pcan_usb_device_poll(void)
 {
-  if (g_ep0_rx_pending != 0U)
+  while (g_ep0_out_tail != g_ep0_out_head)
   {
-    g_ep0_rx_pending = 0U;
-    pcan_ep0_receive();
+    struct t_ep0_out_slot ep0_slot;
+    ep0_slot.len = g_ep0_out_ring[g_ep0_out_tail].len;
+    if (ep0_slot.len > 0U)
+    {
+      memcpy(ep0_slot.data, g_ep0_out_ring[g_ep0_out_tail].data, ep0_slot.len);
+    }
+    __asm volatile("" ::: "memory");
+    g_ep0_out_tail = (g_ep0_out_tail + 1U) % PCAN_EP0_OUT_RING_SLOTS;
+
+    pcan_ep0_receive_data(ep0_slot.data, ep0_slot.len);
   }
 
   while (g_rx_tail != g_rx_head)
@@ -444,6 +508,7 @@ void pcan_usb_device_poll(void)
     {
       memcpy(slot.data, g_rx_ring[g_rx_tail].data, slot.len);
     }
+    __asm volatile("" ::: "memory");
     g_rx_tail = (g_rx_tail + 1U) % PCAN_RX_RING_SLOTS;
 
     switch (slot.ep)
@@ -461,6 +526,31 @@ void pcan_usb_device_poll(void)
         pcan_protocol_process_data(slot.ep, slot.data, slot.len);
         break;
     }
+  }
+
+  if (usb_device_is_configured(0U) && (rx_ring_free_slots() >= PCAN_RX_BACKPRESSURE_MIN))
+  {
+    uint16_t mps = g_negotiated_mps;
+    if ((mps != PCAN_HS_MAX_BULK_PACKET_SIZE) && (mps != PCAN_FS_MAX_BULK_PACKET_SIZE))
+    {
+      mps = PCAN_HS_MAX_BULK_PACKET_SIZE;
+    }
+
+    intc_m_disable_irq(BOARD_USB_IRQn);
+    if (usb_device_is_configured(0U) && (rx_ring_free_slots() >= PCAN_RX_BACKPRESSURE_MIN))
+    {
+      for (uint8_t i = 0U; i < (uint8_t)(sizeof(g_out_ep_addrs) / sizeof(g_out_ep_addrs[0])); i++)
+      {
+        uint8_t ep = g_out_ep_addrs[i];
+        uint8_t idx = (uint8_t)(ep & 0x0FU);
+        if ((idx < 8U) && (g_ep_rx_paused[idx] != 0U))
+        {
+          g_ep_rx_paused[idx] = 0U;
+          (void)usbd_ep_start_read(0U, ep, ep_rx_buf_for_addr(ep), mps);
+        }
+      }
+    }
+    intc_m_enable_irq(BOARD_USB_IRQn);
   }
 }
 

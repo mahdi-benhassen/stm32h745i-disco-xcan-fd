@@ -97,11 +97,31 @@ struct plin_channel
   uint8_t  rx_queue[PLIN_RX_QUEUE_LEN][PLIN_RX_MSG_SIZE];
 };
 
+#define PLIN_CMD_PENDING_SLOTS 4U
+
 static struct plin_channel plin_channels[PLIN_CHANNELS];
-static uint8_t plin_cmd_pending[PLIN_EP_SIZE];
-static uint16_t plin_cmd_pending_len;
+static uint8_t plin_cmd_q[PLIN_CMD_PENDING_SLOTS][PLIN_EP_SIZE];
+static uint16_t plin_cmd_q_len[PLIN_CMD_PENDING_SLOTS];
+static uint8_t plin_cmd_q_head;
+static uint8_t plin_cmd_q_tail;
+static uint8_t plin_cmd_q_count;
 static uint8_t plin_device_no = 1U;
 static uint8_t plin_client_no;
+
+static void plin_drain_cmd_queue(void)
+{
+  while (plin_cmd_q_count > 0U)
+  {
+    if (pcan_usb_send_lin_ep(PLIN_EP_CMDIN,
+                             plin_cmd_q[plin_cmd_q_tail],
+                             plin_cmd_q_len[plin_cmd_q_tail]) == 0)
+    {
+      break;
+    }
+    plin_cmd_q_tail = (uint8_t)((plin_cmd_q_tail + 1U) % PLIN_CMD_PENDING_SLOTS);
+    plin_cmd_q_count--;
+  }
+}
 
 static void plin_send_raw(const uint8_t *data, uint16_t size)
 {
@@ -114,10 +134,19 @@ static void plin_send_raw(const uint8_t *data, uint16_t size)
     size = PLIN_EP_SIZE;
   }
 
-  if (pcan_usb_send_lin_ep(PLIN_EP_CMDIN, data, size) == 0)
+  plin_drain_cmd_queue();
+  if ((plin_cmd_q_count == 0U) &&
+      (pcan_usb_send_lin_ep(PLIN_EP_CMDIN, data, size) != 0))
   {
-    memcpy(plin_cmd_pending, data, size);
-    plin_cmd_pending_len = size;
+    return;
+  }
+
+  if (plin_cmd_q_count < PLIN_CMD_PENDING_SLOTS)
+  {
+    memcpy(plin_cmd_q[plin_cmd_q_head], data, size);
+    plin_cmd_q_len[plin_cmd_q_head] = size;
+    plin_cmd_q_head = (uint8_t)((plin_cmd_q_head + 1U) % PLIN_CMD_PENDING_SLOTS);
+    plin_cmd_q_count++;
   }
 }
 
@@ -199,7 +228,11 @@ static void plin_kick_rx(uint8_t channel)
 void plin_protocol_init(void)
 {
   memset(plin_channels, 0, sizeof(plin_channels));
-  plin_cmd_pending_len = 0U;
+  memset(plin_cmd_q, 0, sizeof(plin_cmd_q));
+  memset(plin_cmd_q_len, 0, sizeof(plin_cmd_q_len));
+  plin_cmd_q_head = 0U;
+  plin_cmd_q_tail = 0U;
+  plin_cmd_q_count = 0U;
   plin_device_no = 1U;
   plin_client_no = 0U;
 
@@ -217,13 +250,7 @@ void plin_protocol_poll(void)
 {
   uint32_t ts_ms = pcan_timestamp_millis();
 
-  if (plin_cmd_pending_len > 0U)
-  {
-    if (pcan_usb_send_lin_ep(PLIN_EP_CMDIN, plin_cmd_pending, plin_cmd_pending_len) != 0)
-    {
-      plin_cmd_pending_len = 0U;
-    }
-  }
+  plin_drain_cmd_queue();
 
   for (uint8_t ch = 0U; ch < PLIN_CHANNELS; ch++)
   {
@@ -254,7 +281,9 @@ void plin_protocol_on_driver_state(uint8_t loaded)
 {
   if (loaded == 0U)
   {
-    plin_cmd_pending_len = 0U;
+    plin_cmd_q_head = 0U;
+    plin_cmd_q_tail = 0U;
+    plin_cmd_q_count = 0U;
     for (uint8_t ch = 0U; ch < PLIN_CHANNELS; ch++)
     {
       plin_channels[ch].schedule_active = 0U;
