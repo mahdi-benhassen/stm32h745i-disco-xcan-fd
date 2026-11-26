@@ -7,7 +7,7 @@
 #include "pcanpro_timestamp.h"
 #include "pcanpro_can.h"
 
-#define CAN_TX_FIFO_SIZE  (256U)
+#define CAN_TX_FIFO_SIZE  (128U)
 #define CAN_RX_POLL_BATCH (32U)
 
 struct t_can_dev
@@ -29,7 +29,7 @@ struct t_can_dev
   uint32_t   rx_errs;
   uint32_t   rx_ovfs;
 
-  struct t_can_msg tx_fifo[CAN_TX_FIFO_SIZE];
+  struct t_can_msg *tx_fifo;
   uint32_t   tx_head;
   uint32_t   tx_tail;
 
@@ -46,12 +46,15 @@ struct t_can_dev
 ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_msg_buf[MCAN_MSG_BUF_SIZE_IN_WORDS];
 #endif
 
+static struct t_can_msg s_can1_tx_fifo[CAN_TX_FIFO_SIZE];
+
 static struct t_can_dev can_dev_array[CAN_BUS_TOTAL] =
 {
   [CAN_BUS_1] = {
     .mcan = BOARD_APP_CAN_BASE,
     .is_physical = 1U,
     .iso_mode = 1U,
+    .tx_fifo = s_can1_tx_fifo,
     .nom_timing = { .brp = 1U, .tseg1 = 63U, .tseg2 = 16U, .sjw = 16U },   /* 1 Mbit/s @ 80 MHz */
     .data_timing = { .brp = 1U, .tseg1 = 15U, .tseg2 = 4U, .sjw = 4U },     /* 4 Mbit/s @ 80 MHz */
   },
@@ -59,6 +62,7 @@ static struct t_can_dev can_dev_array[CAN_BUS_TOTAL] =
     .mcan = NULL,
     .is_physical = 0U,
     .iso_mode = 1U,
+    .tx_fifo = NULL,
     .nom_timing = { .brp = 1U, .tseg1 = 63U, .tseg2 = 16U, .sjw = 16U },
     .data_timing = { .brp = 1U, .tseg1 = 15U, .tseg2 = 4U, .sjw = 4U },
   },
@@ -490,7 +494,7 @@ int pcan_can_write(int bus, struct t_can_msg *p_msg)
   }
 
   struct t_can_dev *dev = &can_dev_array[bus];
-  if (dev->is_physical == 0U)
+  if ((dev->is_physical == 0U) || (dev->tx_fifo == NULL))
   {
     return 0;
   }
@@ -510,7 +514,8 @@ int pcan_can_write(int bus, struct t_can_msg *p_msg)
 static void can_flush_tx_fifo(int bus)
 {
   struct t_can_dev *dev = &can_dev_array[bus];
-  if ((dev->is_physical == 0U) || (dev->mcan == NULL) || (dev->bus_active == 0U))
+  if ((dev->is_physical == 0U) || (dev->mcan == NULL) ||
+      (dev->bus_active == 0U) || (dev->tx_fifo == NULL))
   {
     return;
   }
@@ -578,7 +583,8 @@ static void can_flush_tx_fifo(int bus)
 static void can_poll_rx_fifo(int bus)
 {
   struct t_can_dev *dev = &can_dev_array[bus];
-  if ((dev->is_physical == 0U) || (dev->mcan == NULL) || (dev->bus_active == 0U))
+  if ((dev->is_physical == 0U) || (dev->mcan == NULL) ||
+      (dev->bus_active == 0U) || (dev->tx_fifo == NULL))
   {
     return;
   }
@@ -648,7 +654,8 @@ static void can_poll_rx_fifo(int bus)
 static void can_poll_errors(int bus)
 {
   struct t_can_dev *dev = &can_dev_array[bus];
-  if ((dev->is_physical == 0U) || (dev->mcan == NULL) || (dev->bus_active == 0U))
+  if ((dev->is_physical == 0U) || (dev->mcan == NULL) ||
+      (dev->bus_active == 0U) || (dev->tx_fifo == NULL))
   {
     return;
   }

@@ -18,6 +18,7 @@
 #include "pcanpro_usbd.h"
 #include "pcanpro_protocol.h"
 #include "pcan_usb_device.h"
+#include "plin_protocol.h"
 
 #define PCAN_USB_CONFIG_DESC_LEN  (111U)
 #define PCAN_RX_RING_SLOTS        (16U)
@@ -46,12 +47,12 @@
   /* Interface 1: PCAN-USB Pro FD (LIN placeholder, distinct EPs 0x84..0x06) */           \
   0x09U, USB_DESCRIPTOR_TYPE_INTERFACE, 0x01U, 0x00U, 0x06U, 0x00U, 0x00U, 0x00U,         \
   PCAN_LIN_INTERFACE_STR_INDEX,                                                           \
-  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, 0x84U, 0x02U, (mps_lo), (mps_hi), 0x00U,           \
-  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, 0x04U, 0x02U, (mps_lo), (mps_hi), 0x00U,           \
-  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, 0x85U, 0x02U, (mps_lo), (mps_hi), 0x00U,           \
-  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, 0x05U, 0x02U, (mps_lo), (mps_hi), 0x00U,           \
-  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, 0x86U, 0x02U, (mps_lo), (mps_hi), 0x00U,           \
-  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, 0x06U, 0x02U, (mps_lo), (mps_hi), 0x00U
+  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, PLIN_EP_CMDIN,    0x02U, (mps_lo), (mps_hi), 0x00U, \
+  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, PLIN_EP_CMDOUT,   0x02U, (mps_lo), (mps_hi), 0x00U, \
+  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, PLIN_EP_DATA0IN,  0x02U, (mps_lo), (mps_hi), 0x00U, \
+  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, PLIN_EP_DATA0OUT, 0x02U, (mps_lo), (mps_hi), 0x00U, \
+  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, PLIN_EP_DATA1IN,  0x02U, (mps_lo), (mps_hi), 0x00U, \
+  0x07U, USB_DESCRIPTOR_TYPE_ENDPOINT, PLIN_EP_DATA1OUT, 0x02U, (mps_lo), (mps_hi), 0x00U
 
 static const uint8_t pcan_device_descriptor[] =
 {
@@ -164,7 +165,11 @@ static volatile uint8_t g_ep0_rx_pending;
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep1_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep2_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep3_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep4_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep5_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_ep6_rx_buf[PCAN_HS_MAX_BULK_PACKET_SIZE];
 static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_tx_bounce[PCAN_TX_BOUNCE_SLOTS][PCAN_TX_BOUNCE_SIZE];
+static USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t g_lin_tx_buf[3][PLIN_EP_SIZE];
 
 static struct t_rx_slot g_rx_ring[PCAN_RX_RING_SLOTS];
 static volatile uint32_t g_rx_head;
@@ -257,9 +262,28 @@ static uint8_t *ep_rx_buf_for_addr(uint8_t ep_addr)
       return g_ep2_rx_buf;
     case PCAN_USB_EP_MSGOUT_CH2:
       return g_ep3_rx_buf;
+    case PLIN_EP_CMDOUT:
+      return g_ep4_rx_buf;
+    case PLIN_EP_DATA0OUT:
+      return g_ep5_rx_buf;
+    case PLIN_EP_DATA1OUT:
+      return g_ep6_rx_buf;
     default:
       return NULL;
   }
+}
+
+static uint8_t *ep_tx_buf_for_idx(uint8_t idx)
+{
+  if ((idx >= 1U) && (idx < PCAN_TX_BOUNCE_SLOTS))
+  {
+    return g_tx_bounce[idx];
+  }
+  if ((idx >= 4U) && (idx <= 6U))
+  {
+    return g_lin_tx_buf[idx - 4U];
+  }
+  return NULL;
 }
 
 static void pcan_ep_in_cb(uint8_t busid, uint8_t ep, uint32_t nbytes)
@@ -273,9 +297,13 @@ static void pcan_ep_in_cb(uint8_t busid, uint8_t ep, uint32_t nbytes)
 
   if (g_ep_tx_need_zlp[idx] != 0U)
   {
+    uint8_t *zlp_buf = ep_tx_buf_for_idx(idx);
     g_ep_tx_need_zlp[idx] = 0U;
-    (void)usbd_ep_start_write(busid, ep, g_tx_bounce[idx], 0U);
-    return;
+    if (zlp_buf != NULL)
+    {
+      (void)usbd_ep_start_write(busid, ep, zlp_buf, 0U);
+      return;
+    }
   }
 
   g_ep_tx_in_use[idx] = 0U;
@@ -339,6 +367,9 @@ static void pcan_usbd_event_cb(uint8_t busid, uint8_t event)
       (void)usbd_ep_start_read(busid, PCAN_USB_EP_CMDOUT, g_ep1_rx_buf, mps);
       (void)usbd_ep_start_read(busid, PCAN_USB_EP_MSGOUT_CH1, g_ep2_rx_buf, mps);
       (void)usbd_ep_start_read(busid, PCAN_USB_EP_MSGOUT_CH2, g_ep3_rx_buf, mps);
+      (void)usbd_ep_start_read(busid, PLIN_EP_CMDOUT, g_ep4_rx_buf, mps);
+      (void)usbd_ep_start_read(busid, PLIN_EP_DATA0OUT, g_ep5_rx_buf, mps);
+      (void)usbd_ep_start_read(busid, PLIN_EP_DATA1OUT, g_ep6_rx_buf, mps);
       break;
     }
 
@@ -357,12 +388,18 @@ static struct usbd_interface g_intf_lin =
   .vendor_handler = pcan_vendor_handler,
 };
 
-static struct usbd_endpoint g_ep_cmd_in  = { .ep_addr = PCAN_USB_EP_CMDIN,      .ep_cb = pcan_ep_in_cb };
-static struct usbd_endpoint g_ep_cmd_out = { .ep_addr = PCAN_USB_EP_CMDOUT,     .ep_cb = pcan_ep_out_cb };
-static struct usbd_endpoint g_ep_ch1_in  = { .ep_addr = PCAN_USB_EP_MSGIN_CH1,  .ep_cb = pcan_ep_in_cb };
-static struct usbd_endpoint g_ep_ch1_out = { .ep_addr = PCAN_USB_EP_MSGOUT_CH1, .ep_cb = pcan_ep_out_cb };
-static struct usbd_endpoint g_ep_ch2_in  = { .ep_addr = PCAN_USB_EP_MSGIN_CH2,  .ep_cb = pcan_ep_in_cb };
-static struct usbd_endpoint g_ep_ch2_out = { .ep_addr = PCAN_USB_EP_MSGOUT_CH2, .ep_cb = pcan_ep_out_cb };
+static struct usbd_endpoint g_ep_cmd_in      = { .ep_addr = PCAN_USB_EP_CMDIN,      .ep_cb = pcan_ep_in_cb };
+static struct usbd_endpoint g_ep_cmd_out     = { .ep_addr = PCAN_USB_EP_CMDOUT,     .ep_cb = pcan_ep_out_cb };
+static struct usbd_endpoint g_ep_ch1_in      = { .ep_addr = PCAN_USB_EP_MSGIN_CH1,  .ep_cb = pcan_ep_in_cb };
+static struct usbd_endpoint g_ep_ch1_out     = { .ep_addr = PCAN_USB_EP_MSGOUT_CH1, .ep_cb = pcan_ep_out_cb };
+static struct usbd_endpoint g_ep_ch2_in      = { .ep_addr = PCAN_USB_EP_MSGIN_CH2,  .ep_cb = pcan_ep_in_cb };
+static struct usbd_endpoint g_ep_ch2_out     = { .ep_addr = PCAN_USB_EP_MSGOUT_CH2, .ep_cb = pcan_ep_out_cb };
+static struct usbd_endpoint g_ep_lin_cmd_in  = { .ep_addr = PLIN_EP_CMDIN,          .ep_cb = pcan_ep_in_cb };
+static struct usbd_endpoint g_ep_lin_cmd_out = { .ep_addr = PLIN_EP_CMDOUT,         .ep_cb = pcan_ep_out_cb };
+static struct usbd_endpoint g_ep_lin_d0_in   = { .ep_addr = PLIN_EP_DATA0IN,        .ep_cb = pcan_ep_in_cb };
+static struct usbd_endpoint g_ep_lin_d0_out  = { .ep_addr = PLIN_EP_DATA0OUT,       .ep_cb = pcan_ep_out_cb };
+static struct usbd_endpoint g_ep_lin_d1_in   = { .ep_addr = PLIN_EP_DATA1IN,        .ep_cb = pcan_ep_in_cb };
+static struct usbd_endpoint g_ep_lin_d1_out  = { .ep_addr = PLIN_EP_DATA1OUT,       .ep_cb = pcan_ep_out_cb };
 
 void pcan_usb_device_init(void)
 {
@@ -380,6 +417,12 @@ void pcan_usb_device_init(void)
   usbd_add_endpoint(0U, &g_ep_ch1_out);
   usbd_add_endpoint(0U, &g_ep_ch2_in);
   usbd_add_endpoint(0U, &g_ep_ch2_out);
+  usbd_add_endpoint(0U, &g_ep_lin_cmd_in);
+  usbd_add_endpoint(0U, &g_ep_lin_cmd_out);
+  usbd_add_endpoint(0U, &g_ep_lin_d0_in);
+  usbd_add_endpoint(0U, &g_ep_lin_d0_out);
+  usbd_add_endpoint(0U, &g_ep_lin_d1_in);
+  usbd_add_endpoint(0U, &g_ep_lin_d1_out);
 
   (void)usbd_initialize(0U, (uintptr_t)BOARD_USB_BASE, pcan_usbd_event_cb);
 }
@@ -403,7 +446,21 @@ void pcan_usb_device_poll(void)
     }
     g_rx_tail = (g_rx_tail + 1U) % PCAN_RX_RING_SLOTS;
 
-    pcan_protocol_process_data(slot.ep, slot.data, slot.len);
+    switch (slot.ep)
+    {
+      case PLIN_EP_CMDOUT:
+        plin_protocol_process_command(slot.data, slot.len);
+        break;
+      case PLIN_EP_DATA0OUT:
+        plin_protocol_process_data(0U, slot.data, slot.len);
+        break;
+      case PLIN_EP_DATA1OUT:
+        plin_protocol_process_data(1U, slot.data, slot.len);
+        break;
+      default:
+        pcan_protocol_process_data(slot.ep, slot.data, slot.len);
+        break;
+    }
   }
 }
 
@@ -483,5 +540,45 @@ int pcan_flush_data(struct t_m2h_fsm *pfsm, void *src, int size)
     default:
       pfsm->state = 0U;
       return 0;
+  }
+}
+
+int pcan_usb_send_lin_ep(uint8_t ep_addr, const void *src, uint16_t size)
+{
+  if (!usb_device_is_configured(0U) || (src == NULL) || (size == 0U) || (size > PLIN_EP_SIZE))
+  {
+    return 0;
+  }
+
+  uint8_t idx = (uint8_t)(ep_addr & 0x0FU);
+  if ((idx < 4U) || (idx > 6U) || ((ep_addr & 0x80U) == 0U))
+  {
+    return 0;
+  }
+  if (g_ep_tx_in_use[idx] != 0U)
+  {
+    return 0;
+  }
+
+  uint8_t *dst = g_lin_tx_buf[idx - 4U];
+  memcpy(dst, src, size);
+  g_ep_tx_in_use[idx] = 1U;
+  g_ep_tx_need_zlp[idx] = 0U;
+
+  if (usbd_ep_start_write(0U, ep_addr, dst, size) != 0)
+  {
+    g_ep_tx_in_use[idx] = 0U;
+    return 0;
+  }
+
+  return 1;
+}
+
+void pcan_usb_flush_lin_eps(void)
+{
+  for (uint8_t idx = 4U; idx <= 6U; idx++)
+  {
+    g_ep_tx_in_use[idx] = 0U;
+    g_ep_tx_need_zlp[idx] = 0U;
   }
 }

@@ -9,6 +9,7 @@
 #include "pcanpro_led.h"
 #include "pcanpro_usbd.h"
 #include "pcan_usb_device.h"
+#include "plin_protocol.h"
 
 #define CAN_CHANNEL_MAX            (2U)
 #define PCAN_USB_DATA_BUFFER_SIZE  (2048U)
@@ -128,6 +129,34 @@ uint8_t pcan_protocol_device_setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypede
     case USB_VENDOR_REQUEST_INFO:
       switch (req->wValue)
       {
+        case USB_VENDOR_REQUEST_wVALUE_INFO_BOOTLOADER:
+        {
+          static struct pcan_usbpro_bootloader_info bli =
+          {
+            .ctrl_type = BOOTLOADER_INFO_STRUCT_TYPE,
+            .version = { 2U, 1U, 0U, 0U },
+            .day = 1U,
+            .month = 1U,
+            .year = 26U,
+            .dummy = 0U,
+            .serial_num_high = 0U,
+            .serial_num_low = 1U,
+            .hw_type = 0U,
+            .hw_rev = 0U,
+          };
+
+          if (req->wLength == 0U)
+          {
+            USBD_CtlError(pdev, req);
+            return (uint8_t)USBD_FAIL;
+          }
+
+          bli.serial_num_low = pcan_device.device_nr;
+          uint16_t send_len = MIN(req->wLength, (uint16_t)sizeof(bli));
+          (void)USBD_CtlSendData(pdev, (uint8_t *)&bli, send_len);
+          return (uint8_t)USBD_OK;
+        }
+
         case USB_VENDOR_REQUEST_wVALUE_INFO_FIRMWARE:
         {
           static struct pcan_usbfd_fw_info fwi =
@@ -238,6 +267,8 @@ void pcan_ep0_receive(void)
   else
   {
     pcan_device.lin_drv_loaded = drv_load_packet[1];
+    pcan_usb_flush_lin_eps();
+    plin_protocol_on_driver_state(pcan_device.lin_drv_loaded);
   }
 }
 

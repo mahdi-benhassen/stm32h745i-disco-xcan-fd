@@ -16,9 +16,10 @@ Unlike Full-Speed-only USB PHYs (12 Mbps / 64 B packets), the **`HPM5361`** inte
 | Resource | Pin / Instance | Notes |
 |---|---|---|
 | **MCU / Board** | `HPM5361` on `HPM5300EVK` | Built with `HPM_BUILD_TYPE=flash_xip` |
-| **USB 2.0 High-Speed (`USB0`)** | `PA24` (`USB0_N`), `PA25` (`USB0_P`) -> `J1` Type-C | 480 Mbps HS (`wMaxPacketSize = 512`, FS fallback `64`), `bInterfaceClass = 0x00`, 2 interfaces (CAN-FD `0x81..0x03`, LIN `0x84..0x06`) |
-| **CAN-FD (`HPM_MCAN3`)** | `PY04` (`CAN3_RXD`), `PY05` (`CAN3_TXD`) -> `U10` (`TJA1042T/3`) -> `J9` | `TJA1042T/3` `STB` is tied to GND via `10 kOhm` (`R67`, active normal mode). Split `120 Ohm` termination onboard. Clocked at **`80.0 MHz`** (`clk_src_pll1_clk0`). |
-| **Status LED** | `PA23` (active-LOW: `0` = ON, `1` = OFF) | Slow/fast USB status blink + brief activity flicker on CAN RX/TX |
+| **USB 2.0 High-Speed (`USB0`)** | Dedicated `USB_DP` (Pin 72), `USB_DM` (Pin 73), `USB_VBUS` (Pin 68) -> `J1` Type-C | LQFP100 uses dedicated USB PHY pins (`PA24`/`PA25` are only USB on QFN48/LQFP64; on HPM5300EVK `PA24` is `LIN 12V_EN`). 480 Mbps HS (`wMaxPacketSize = 512`, FS fallback `64`), `bInterfaceClass = 0x00`, 2 interfaces (CAN-FD `0x81..0x03`, LIN `0x84..0x06`) |
+| **CAN-FD (`HPM_MCAN3`)** | `PY04` (`CAN3_RXD`), `PY05` (`CAN3_TXD`) -> `U10` (`TJA1042T/3`) -> `J9` (`Pin 1: CANL`, `Pin 3: CANH`, `Pin 2/4: GND`) | `TJA1042T/3` `STB` is tied to GND via `10 kOhm` (`R67`, active normal mode). Split `120 Ohm` termination onboard. Clocked at **`80.0 MHz`** (`clk_src_pll1_clk0`). |
+| **LIN (`PLIN-USB`, `HPM_UART3`)** | `PA14` (`LIN3_RXD`), `PA15` (`LIN3_TXD`), `PA13` (`LIN3_SLP_N`), `PA24` (`12V_EN`) -> `U11` (`TJA1021T`) -> `J9` (`Pin 5: LIN1`) | Onboard `1 kOhm` Master pull-up (`R73`), wake push-button (`SW4`), and software-controlled `12V_EN` + `SLP_N`. Supports `PLIN_USB.sys` Master/Slave & scheduler. |
+| **Status LED** | `PA23` (active-LOW: `0` = ON, `1` = OFF) | Slow/fast USB status blink + brief activity flicker on CAN/LIN RX/TX |
 | **Timestamps** | RISC-V `mcycle` CSR | Monotonic `1 us` resolution derived from `clock_cpu0` |
 
 ## USB Identifiers Notice

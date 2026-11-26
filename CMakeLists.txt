@@ -31,6 +31,8 @@ set(PCAN_APP_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/app/pcan/pcanpro_fd_protocol.c
   ${CMAKE_CURRENT_SOURCE_DIR}/app/pcan/pcanpro_led.c
   ${CMAKE_CURRENT_SOURCE_DIR}/app/pcan/pcanpro_timestamp.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/app/pcan/plin_protocol.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/app/pcan/plin_lin.c
 )
 
 set_source_files_properties(${PCAN_APP_SRCS} PROPERTIES

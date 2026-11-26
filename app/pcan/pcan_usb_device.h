@@ -16,3 +16,5 @@ uint16_t pcan_usb_frame_number(void);
 uint16_t pcan_usb_get_mps(void);
 int pcan_flush_ep(uint8_t ep);
 int pcan_flush_data(struct t_m2h_fsm *pfsm, void *src, int size);
+int pcan_usb_send_lin_ep(uint8_t ep_addr, const void *src, uint16_t size);
+void pcan_usb_flush_lin_eps(void);
