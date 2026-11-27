@@ -6,22 +6,49 @@
             "hidden": true,
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/${presetName}",
-		    "toolchainFile": "${sourceDir}/../gcc-arm-none-eabi.cmake",
+            "toolchainFile": "${sourceDir}/../gcc-arm-none-eabi.cmake",
             "cacheVariables": {
+                "CAN_NODE_UDS_BLOCK_DATA_MAX": "4096",
+                "CAN_NODE_ISOTP_RX_BUF_SIZE": "8192",
+                "CAN_NODE_CAN_FD": "1",
+                "CAN_NODE_CAN_FD_BRS": "1",
+                "CAN_NODE_TX_DL": "64"
             }
         },
         {
             "name": "Debug",
+            "displayName": "Option A: Standalone ECU on FDCAN1 (Debug)",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug"
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CAN_NODE_SINGLE_BOARD": "OFF"
             }
         },
         {
             "name": "Release",
+            "displayName": "Option A: Standalone ECU on FDCAN1 (Release)",
             "inherits": "default",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release"
+                "CMAKE_BUILD_TYPE": "Release",
+                "CAN_NODE_SINGLE_BOARD": "OFF"
+            }
+        },
+        {
+            "name": "SingleBoard-Debug",
+            "displayName": "Option B: Single-Board PCAN (FDCAN1) + UDS ECU (FDCAN2) (Debug)",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CAN_NODE_SINGLE_BOARD": "ON"
+            }
+        },
+        {
+            "name": "SingleBoard-Release",
+            "displayName": "Option B: Single-Board PCAN (FDCAN1) + UDS ECU (FDCAN2) (Release)",
+            "inherits": "default",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CAN_NODE_SINGLE_BOARD": "ON"
             }
         }
     ],
@@ -33,6 +60,14 @@
         {
             "name": "Release",
             "configurePreset": "Release"
+        },
+        {
+            "name": "SingleBoard-Debug",
+            "configurePreset": "SingleBoard-Debug"
+        },
+        {
+            "name": "SingleBoard-Release",
+            "configurePreset": "SingleBoard-Release"
         }
     ]
 }

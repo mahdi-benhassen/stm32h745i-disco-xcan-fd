@@ -36,7 +36,12 @@ struct t_can_dev
 static struct t_can_dev can_dev_array[CAN_BUS_TOTAL] =
 {
   [CAN_BUS_1] = { .hfdcan = &hfdcan1 },
+#if defined(CAN_NODE_SINGLE_BOARD) && (CAN_NODE_SINGLE_BOARD != 0)
+  /* Reserve FDCAN2 exclusively for the on-board can-node UDS/ISO-TP ECU in Option B. */
+  [CAN_BUS_2] = { .hfdcan = NULL },
+#else
   [CAN_BUS_2] = { .hfdcan = &hfdcan2 },
+#endif
 };
 
 static uint32_t clamp_u32(uint32_t val, uint32_t min_v, uint32_t max_v)

@@ -25,11 +25,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "can_node_config.h"
+#include "can_node_app.h"
+#if CAN_NODE_SINGLE_BOARD
 #include "pcanpro_timestamp.h"
 #include "pcanpro_led.h"
 #include "pcanpro_can.h"
 #include "pcanpro_protocol.h"
 #include "pcan_usb_device.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -149,11 +153,14 @@ Error_Handler();
   MX_USART3_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+#if CAN_NODE_SINGLE_BOARD
   pcan_timestamp_init();
   pcan_led_init();
   pcan_led_set_mode(LED_STAT, LED_MODE_BLINK_FAST, 0xFFFFFFFFu);
   pcan_protocol_init();
   pcan_usb_device_init();
+#endif
+  can_node_app_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -163,10 +170,13 @@ Error_Handler();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+#if CAN_NODE_SINGLE_BOARD
     pcan_usb_device_poll();
     pcan_can_poll();
     pcan_protocol_poll();
     pcan_led_poll();
+#endif
+    can_node_app_poll();
   }
   /* USER CODE END 3 */
 }
